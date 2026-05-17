@@ -1,0 +1,25 @@
+name: Scan Plugins
+
+on:
+  pull_request:
+    paths:
+      - '.claude-plugin/**'
+      - '.github/actions/**'
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Dogfood: this repo uses its own local copy of the action.
+      # External consumers MUST pin a SHA — see the action README.
+      - uses: ./.github/actions/scan-plugins
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          marketplace-path: .claude-plugin/marketplace.json
+          # fail-on-findings: "true"   # uncomment to hard-block policy violations

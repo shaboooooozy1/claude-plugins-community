@@ -1,0 +1,23 @@
+name: Bump Plugin SHAs
+
+on:
+  schedule:
+    - cron: '23 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Dogfood: this repo uses its own local copy of the action.
+      # External consumers MUST pin a SHA — see the action README.
+      - uses: ./.github/actions/bump-plugin-shas
+        with:
+          marketplace-path: .claude-plugin/marketplace.json
+          max-bumps: 20

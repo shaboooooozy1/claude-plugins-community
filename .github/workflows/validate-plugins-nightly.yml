@@ -1,0 +1,24 @@
+name: Validate Plugins (nightly drift check)
+
+on:
+  schedule:
+    - cron: '23 7 * * *'
+  workflow_dispatch:
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Dogfood: this repo uses its own local copy of the action.
+      # External consumers MUST pin a SHA — see the action README.
+      - uses: ./.github/actions/validate-plugins
+        with:
+          marketplace-path: .claude-plugin/marketplace.json
+          validate-all-external: "true"
+          skip-local-folders: "true"
