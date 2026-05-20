@@ -24,6 +24,9 @@ jobs:
       - name: Static invariant tests
         run: bash .github/actions/validate-plugins/test-invariants.sh
 
+      - name: Static common.sh predicate tests
+        run: bash .github/actions/validate-plugins/test-common.sh
+
       # Dogfood: this repo uses its own local copy of the action.
       # External consumers MUST pin a SHA — see the action README.
       - uses: ./.github/actions/validate-plugins
