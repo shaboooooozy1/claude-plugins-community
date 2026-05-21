@@ -116,14 +116,45 @@ SHA-pinning, host allowlist, hidden-Unicode, name regex, etc.).
 
 ### Tests
 
-`bash .github/actions/validate-plugins/test-invariants.sh` runs the
-static invariant suite (no network, no API key). Run it after touching
-`11-validate-invariants.sh` or `lib/common.sh`. Adding a new invariant
-means adding a fixture that exercises it; the suite uses heredocs so it
-works on both bash 3.2 (macOS) and bash 5.x (Linux runners).
+There are two static suites under `validate-plugins/`. Both run with no
+network and no API key; both are wired into `validate-plugins.yml` and
+must stay green.
 
-The workflow `validate-plugins.yml` dogfoods the action on every PR that
-touches `.claude-plugin/**` or `.github/actions/**`.
+| Script | Covers | Run when you touch |
+|---|---|---|
+| `test-invariants.sh` | I1–I11 against synthetic `marketplace.json` fixtures; plus a real-git fixture for I7 (per-file mode, `BASE_REF=HEAD~1`); plus boundary/false-positive guards and `WARN_INVARIANTS` demotion behaviour | `scripts/11-validate-invariants.sh` |
+| `test-common.sh` | The `lib/common.sh` security predicates directly: `has_unsafe_chars`, `assert_safe_sha`, `assert_safe_path`, `assert_safe_url` (allowlist match, lookalike-host rejection, SSRF guards) | `lib/common.sh` |
+
+Adding a new invariant means adding at least one fixture that exercises
+it (a positive case) plus a false-positive guard for any boundary it
+introduces. Fixtures use heredocs (not quoted `"..."` args inside
+`$(...)`) so the suite runs identically on bash 3.2 (macOS) and bash
+5.x (Linux runners).
+
+The workflow `validate-plugins.yml` dogfoods the action on every PR
+that touches `.claude-plugin/**` or `.github/actions/**`, running both
+test suites before the composite action itself.
+
+### Invariant severity contract
+
+`11-validate-invariants.sh` reads `WARN_INVARIANTS` to decide which
+codes are demoted from `::error` (build-fail) to `::warning`
+(annotation only). The default is:
+
+```
+WARN_INVARIANTS="I1 I3 I5 I8"
+```
+
+i.e. sort-order, description length/whitespace, missing SHA, and
+missing vendored-plugin manifest are **non-blocking by default**. The
+hard-blocking invariants are I2 (dup names), I4 (non-https URLs), I6/I7
+(per-file mode integrity), I9 (shell metacharacters), I10 (hidden
+Unicode), I11 (name regex). Consumers can override `WARN_INVARIANTS`
+(empty string = everything blocks) or set `FAIL_ON_WARNINGS=true` to
+turn the warning tier into hard failures. Keep this contract stable —
+downstream `*-plugins` repos rely on it. If you tighten a default, ship
+it as a separately-pinned SHA so consumers can roll forward
+deliberately.
 
 ### Releasing changes to the actions
 
