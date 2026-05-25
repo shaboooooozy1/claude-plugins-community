@@ -123,7 +123,7 @@ runs:
         ENTRIES_DIR: ${{ inputs.entries-dir }}
       run: "$ACTION_PATH/scripts/00-detect-changes.sh"
 
-    - name: Custom invariants I1-I9
+    - name: Custom invariants I1-I11
       shell: bash
       env:
         MARKETPLACE_PATH: ${{ inputs.marketplace-path }}
