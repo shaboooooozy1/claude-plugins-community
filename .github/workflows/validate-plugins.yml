@@ -27,6 +27,18 @@ jobs:
       - name: Static common.sh predicate tests
         run: bash .github/actions/validate-plugins/test-common.sh
 
+      - name: Static detect-changes tests
+        run: bash .github/actions/validate-plugins/test-detect-changes.sh
+
+      - name: Static aux-files and report tests
+        run: bash .github/actions/validate-plugins/test-aux-and-report.sh
+
+      - name: Static cli-external tests
+        run: bash .github/actions/validate-plugins/test-cli-external.sh
+
+      - name: Static cli-local tests
+        run: bash .github/actions/validate-plugins/test-cli-local.sh
+
       # Dogfood: this repo uses its own local copy of the action.
       # External consumers MUST pin a SHA — see the action README.
       - uses: ./.github/actions/validate-plugins

@@ -43,6 +43,7 @@ assert_returns_0       "rejects semicolon"     has_unsafe_chars 'a;b'
 assert_returns_0       "rejects ampersand"     has_unsafe_chars 'a&b'
 assert_returns_0       "rejects pipe"          has_unsafe_chars 'a|b'
 assert_returns_0       "rejects parens"        has_unsafe_chars 'a(b)'
+assert_returns_0       "rejects less-than"     has_unsafe_chars 'a<b'
 assert_returns_0       "rejects redirects"     has_unsafe_chars 'a>b'
 assert_returns_0       "rejects whitespace"    has_unsafe_chars 'a b'
 assert_returns_0       "rejects tab"           has_unsafe_chars $'a\tb'
@@ -85,6 +86,103 @@ assert_returns_nonzero "spaces in url"           assert_safe_url "https://github
 # The allowlist matches "host == h" or "host == *.h" — confirm a host that
 # is a SUFFIX but not a subdomain (e.g. "evilgithub.com") is rejected.
 assert_returns_nonzero "lookalike suffix host"   assert_safe_url "https://evilgithub.com/owner/repo"
+
+# bitbucket.org is in the default ALLOWED_HOSTS but not in the test allowlist above
+ALLOWED_HOSTS="github.com gitlab.com bitbucket.org"
+assert_returns_0       "bitbucket in allowlist"  assert_safe_url "https://bitbucket.org/owner/repo"
+ALLOWED_HOSTS="github.com gitlab.com"
+
+assert_returns_nonzero "rejects bare IPv6 brackets" assert_safe_url "https://[::1]/x"
+assert_returns_nonzero "rejects bare IPv6 no brackets" assert_safe_url "https://::1/x"
+
+# ---- assert_safe_string -------------------------------------------------------
+echo "-- assert_safe_string"
+assert_returns_0       "clean value"             assert_safe_string "label" "clean-value"
+assert_returns_nonzero "dirty value"             assert_safe_string "label" 'bad;value'
+
+# ---- record_result ------------------------------------------------------------
+echo "-- record_result"
+total=$((total+1))
+rm -f "$RESULTS_FILE"
+record_result "test-step" "pass" "test-subject" "test-detail"
+if [[ -f "$RESULTS_FILE" ]] \
+   && jq -e '.step=="test-step" and .status=="pass" and .subject=="test-subject" and .detail=="test-detail"' \
+      "$RESULTS_FILE" >/dev/null 2>&1; then
+  pass "record_result writes correct JSONL"
+else
+  fail "record_result writes correct JSONL" "JSONL mismatch or missing"
+fi
+
+# ---- cli_validate (with stub claude binary) -----------------------------------
+echo "-- cli_validate"
+STUB_BIN="$TMP/bin"
+mkdir -p "$STUB_BIN"
+
+# Stub that passes cleanly
+cat > "$STUB_BIN/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "Validation passed"
+exit 0
+STUB
+chmod +x "$STUB_BIN/claude"
+OLD_PATH="$PATH"
+export PATH="$STUB_BIN:$PATH"
+
+total=$((total+1))
+rm -f "$RESULTS_FILE"
+if ( cli_validate "t" "subj" "/dev/null" ) >/dev/null 2>&1; then
+  if jq -e '.status=="pass"' "$RESULTS_FILE" >/dev/null 2>&1; then
+    pass "cli_validate pass records pass"
+  else fail "cli_validate pass records pass" "wrong status in results"; fi
+else fail "cli_validate pass records pass" "expected exit 0"; fi
+
+# Stub that emits warnings
+cat > "$STUB_BIN/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "passed with warnings"
+echo "⚠ some warning"
+exit 0
+STUB
+chmod +x "$STUB_BIN/claude"
+
+total=$((total+1))
+rm -f "$RESULTS_FILE"
+if ( cli_validate "t" "subj" "/dev/null" ) >/dev/null 2>&1; then
+  if jq -e '.status=="warn"' "$RESULTS_FILE" >/dev/null 2>&1; then
+    pass "cli_validate warn records warn"
+  else fail "cli_validate warn records warn" "wrong status in results"; fi
+else fail "cli_validate warn records warn" "expected exit 0"; fi
+
+# Same warning stub but FAIL_ON_WARNINGS=true
+total=$((total+1))
+rm -f "$RESULTS_FILE"
+if ( FAIL_ON_WARNINGS=true cli_validate "t" "subj" "/dev/null" ) >/dev/null 2>&1; then
+  fail "cli_validate warn + FAIL_ON_WARNINGS" "expected non-zero exit"
+else
+  if jq -e '.status=="fail"' "$RESULTS_FILE" >/dev/null 2>&1; then
+    pass "cli_validate warn + FAIL_ON_WARNINGS"
+  else fail "cli_validate warn + FAIL_ON_WARNINGS" "wrong status in results"; fi
+fi
+
+# Stub that fails
+cat > "$STUB_BIN/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "Error: schema violation"
+exit 1
+STUB
+chmod +x "$STUB_BIN/claude"
+
+total=$((total+1))
+rm -f "$RESULTS_FILE"
+if ( cli_validate "t" "subj" "/dev/null" ) >/dev/null 2>&1; then
+  fail "cli_validate fail records fail" "expected non-zero exit"
+else
+  if jq -e '.status=="fail"' "$RESULTS_FILE" >/dev/null 2>&1; then
+    pass "cli_validate fail records fail"
+  else fail "cli_validate fail records fail" "wrong status in results"; fi
+fi
+
+export PATH="$OLD_PATH"
 
 echo
 echo "=== $((total-failures))/$total passed ==="
