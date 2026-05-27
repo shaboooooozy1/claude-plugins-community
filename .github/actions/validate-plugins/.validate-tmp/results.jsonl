@@ -1,17 +1,1 @@
-{"step":"fatal","status":"fail","subject":"die","detail":"sha is not a 40-char lowercase hex string: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
-{"step":"fatal","status":"fail","subject":"die","detail":"sha is not a 40-char lowercase hex string: aaaa"}
-{"step":"fatal","status":"fail","subject":"die","detail":"sha is not a 40-char lowercase hex string: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
-{"step":"fatal","status":"fail","subject":"die","detail":"sha is not a 40-char lowercase hex string: gaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
-{"step":"fatal","status":"fail","subject":"die","detail":"sha is not a 40-char lowercase hex string: "}
-{"step":"fatal","status":"fail","subject":"die","detail":"path is absolute or contains '..': /etc/passwd"}
-{"step":"fatal","status":"fail","subject":"die","detail":"path is absolute or contains '..': ../escape"}
-{"step":"fatal","status":"fail","subject":"die","detail":"path is absolute or contains '..': a/../b"}
-{"step":"fatal","status":"fail","subject":"die","detail":"path contains unsafe characters: a;rm/b"}
-{"step":"fatal","status":"fail","subject":"die","detail":"path contains unsafe characters: a b"}
-{"step":"fatal","status":"fail","subject":"die","detail":"url does not match ^https://[A-Za-z0-9./_-]+$ : http://github.com/owner/repo"}
-{"step":"fatal","status":"fail","subject":"die","detail":"url host is a bare IP address (not permitted): 169.254.169.254"}
-{"step":"fatal","status":"fail","subject":"die","detail":"url does not match ^https://[A-Za-z0-9./_-]+$ : https://github.com:8080/x/y"}
-{"step":"fatal","status":"fail","subject":"die","detail":"url host 'evil.example' is not in the allowlist (github.com gitlab.com)"}
-{"step":"fatal","status":"fail","subject":"die","detail":"url contains unsafe characters: https://github.com/x;rm/y"}
-{"step":"fatal","status":"fail","subject":"die","detail":"url contains unsafe characters: https://github.com/ /y"}
-{"step":"fatal","status":"fail","subject":"die","detail":"url host 'evilgithub.com' is not in the allowlist (github.com gitlab.com)"}
+{"step":"cli-step","status":"fail","subject":"stub-subject","detail":"Error: stub failure for /tmp/tmp.sTf4IKscIh/plugin.json"}

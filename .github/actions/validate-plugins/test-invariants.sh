@@ -91,7 +91,7 @@ EOF
 ); assert_fires "I9 shell metachar" I9 "$f"
 
 # I10: U+200B ZWSP embedded in description
-f=$(mk i10); printf '{"plugins":[{"name":"abc","description":"hello​world ten chars","source":"./x"}]}' > "$f"
+f="$TMP/i10.json"; printf '{"plugins":[{"name":"abc","description":"hello​world ten chars","source":"./x"}]}' > "$f"
 assert_fires "I10 hidden unicode" I10 "$f"
 
 f=$(mk i11 <<'EOF'
