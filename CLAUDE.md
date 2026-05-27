@@ -116,14 +116,15 @@ SHA-pinning, host allowlist, hidden-Unicode, name regex, etc.).
 
 ### Tests
 
-There are two static suites under `validate-plugins/`. Both run with no
-network and no API key; both are wired into `validate-plugins.yml` and
+There are three static suites under `validate-plugins/`. All run with no
+network and no API key; all are wired into `validate-plugins.yml` and
 must stay green.
 
 | Script | Covers | Run when you touch |
 |---|---|---|
 | `test-invariants.sh` | I1–I11 against synthetic `marketplace.json` fixtures; plus a real-git fixture for I7 (per-file mode, `BASE_REF=HEAD~1`); plus boundary/false-positive guards and `WARN_INVARIANTS` demotion behaviour | `scripts/11-validate-invariants.sh` |
-| `test-common.sh` | The `lib/common.sh` security predicates directly: `has_unsafe_chars`, `assert_safe_sha`, `assert_safe_path`, `assert_safe_url` (allowlist match, lookalike-host rejection, SSRF guards) | `lib/common.sh` |
+| `test-common.sh` | The `lib/common.sh` helpers directly: security predicates (`has_unsafe_chars`, `assert_safe_sha`, `assert_safe_path`, `assert_safe_url`) plus result recording and `cli_validate` pass/warn/fail behaviour | `lib/common.sh` |
+| `test-detect-changes.sh` | `scripts/00-detect-changes.sh` in single-file and per-file modes, including assembled marketplace output, changed-entry/external selection, nested local plugin detection, and the unresolved-`BASE_REF` fallback path | `scripts/00-detect-changes.sh` |
 
 Adding a new invariant means adding at least one fixture that exercises
 it (a positive case) plus a false-positive guard for any boundary it
@@ -132,8 +133,8 @@ introduces. Fixtures use heredocs (not quoted `"..."` args inside
 5.x (Linux runners).
 
 The workflow `validate-plugins.yml` dogfoods the action on every PR
-that touches `.claude-plugin/**` or `.github/actions/**`, running both
-test suites before the composite action itself.
+that touches `.claude-plugin/**` or `.github/actions/**`, running all
+three static suites before the composite action itself.
 
 ### Invariant severity contract
 

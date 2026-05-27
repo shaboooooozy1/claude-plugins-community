@@ -27,6 +27,9 @@ jobs:
       - name: Static common.sh predicate tests
         run: bash .github/actions/validate-plugins/test-common.sh
 
+      - name: Static detect-changes tests
+        run: bash .github/actions/validate-plugins/test-detect-changes.sh
+
       # Dogfood: this repo uses its own local copy of the action.
       # External consumers MUST pin a SHA — see the action README.
       - uses: ./.github/actions/validate-plugins

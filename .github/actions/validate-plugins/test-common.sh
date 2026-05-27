@@ -14,6 +14,30 @@ source "$ACTION_PATH/lib/common.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 export VALIDATE_TMP="$TMP"
 export ALLOWED_HOSTS="github.com gitlab.com"
+export PATH="$TMP/bin:$PATH"
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+case "${CLAUDE_STUB_MODE:-pass}" in
+  pass)
+    printf 'validated %s\n' "${3:-}"
+    exit 0
+    ;;
+  warn)
+    printf '⚠ stub warning for %s\n' "${3:-}"
+    exit 0
+    ;;
+  fail)
+    printf 'Error: stub failure for %s\n' "${3:-}" >&2
+    exit 1
+    ;;
+  *)
+    printf 'unknown CLAUDE_STUB_MODE=%s\n' "${CLAUDE_STUB_MODE:-}" >&2
+    exit 2
+    ;;
+esac
+EOF
+chmod +x "$TMP/bin/claude"
 
 failures=0; total=0
 
@@ -29,6 +53,28 @@ assert_returns_nonzero() {
   total=$((total+1))
   local label="$1"; shift
   if ( "$@" ) >/dev/null 2>&1; then fail "$label" "expected non-zero exit"; else pass "$label"; fi
+}
+assert_last_result() {
+  total=$((total+1))
+  local label="$1" step="$2" status="$3" subject="$4"
+  if jq -s -e \
+      --arg step "$step" \
+      --arg status "$status" \
+      --arg subject "$subject" \
+      'length > 0 and .[-1].step == $step and .[-1].status == $status and .[-1].subject == $subject' \
+      "$RESULTS_FILE" >/dev/null 2>&1; then
+    pass "$label"
+  else
+    fail "$label" "unexpected last result"
+  fi
+}
+reset_results() { : > "$RESULTS_FILE"; }
+
+run_cli_validate() {
+  local mode="$1" fail_on="$2"
+  reset_results
+  CLAUDE_STUB_MODE="$mode" FAIL_ON_WARNINGS="$fail_on" \
+    cli_validate "cli-step" "stub-subject" "$TMP/plugin.json" >/dev/null 2>&1
 }
 
 echo "=== common.sh predicate tests ==="
@@ -85,6 +131,48 @@ assert_returns_nonzero "spaces in url"           assert_safe_url "https://github
 # The allowlist matches "host == h" or "host == *.h" — confirm a host that
 # is a SUFFIX but not a subdomain (e.g. "evilgithub.com") is rejected.
 assert_returns_nonzero "lookalike suffix host"   assert_safe_url "https://evilgithub.com/owner/repo"
+
+# ---- record_result ----------------------------------------------------------
+echo "-- record_result"
+reset_results
+record_result "unit-step" "pass" "unit-subject" "unit-detail"
+assert_last_result "records JSONL result rows" "unit-step" "pass" "unit-subject"
+
+# ---- cli_validate -----------------------------------------------------------
+echo "-- cli_validate"
+echo '{}' > "$TMP/plugin.json"
+
+total=$((total+1))
+if run_cli_validate pass false; then
+  pass "pass result exits 0"
+else
+  fail "pass result exits 0" "expected 0 exit"
+fi
+assert_last_result "pass result records pass" "cli-step" "pass" "stub-subject"
+
+total=$((total+1))
+if run_cli_validate warn false; then
+  pass "warning result exits 0 by default"
+else
+  fail "warning result exits 0 by default" "expected 0 exit"
+fi
+assert_last_result "warning result records warn" "cli-step" "warn" "stub-subject"
+
+total=$((total+1))
+if run_cli_validate warn true; then
+  fail "fail-on-warnings returns non-zero" "expected non-zero exit"
+else
+  pass "fail-on-warnings returns non-zero"
+fi
+assert_last_result "fail-on-warnings records fail" "cli-step" "fail" "stub-subject"
+
+total=$((total+1))
+if run_cli_validate fail false; then
+  fail "validator failure returns non-zero" "expected non-zero exit"
+else
+  pass "validator failure returns non-zero"
+fi
+assert_last_result "validator failure records fail" "cli-step" "fail" "stub-subject"
 
 echo
 echo "=== $((total-failures))/$total passed ==="
