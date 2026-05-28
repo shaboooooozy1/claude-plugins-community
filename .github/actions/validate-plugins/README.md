@@ -12,20 +12,20 @@ every run and uses `claude plugin validate` as the canonical correctness check
 (step 20). There is **no vendored or fetched JSON Schema** to keep in sync.
 
 On top of canonical correctness, step 11 applies a static set of
-**security/policy invariants** (I1–I9) that are intentionally stricter than the
+**security/policy invariants** (I1–I11) that are intentionally stricter than the
 canonical schema. These do not track upstream — they are this org's policy floor.
 
 | Layer | Step | Tracks upstream? |
 |---|---|---|
 | Canonical schema | 20: `claude plugin validate` | Yes — fresh CLI install each run |
-| Security/policy | 11: invariants I1–I9 | No — static by design |
+| Security/policy | 11: invariants I1–I11 | No — static by design |
 | Per-plugin quality | 30/40/41: clone/validate/aux-parse | Yes — uses same CLI |
 
 ## What it checks
 
 | Step | Scope | Check |
 |---|---|---|
-| **11 invariants** | full marketplace | I1–I9 hardening rules (sort, dups, desc bounds, https-only, SHA-pin required, filename match, no-direct-edit, vendored-path-exists, no shell metacharacters) |
+| **11 invariants** | full marketplace | I1–I11 hardening rules (sort, dups, desc bounds, https-only, SHA-pin required, filename match, no-direct-edit, vendored-path-exists, no shell metacharacters, no hidden-Unicode, name regex) |
 | **20 cli-marketplace** | full marketplace | `claude plugin validate <marketplace.json>` — the canonical schema check |
 | **30 cli-external** | changed entries (or all, if `validate-all-external`) | clone each external plugin at its pinned SHA, run `claude plugin validate`. Exactly as strict as the CLI — extra keys in `plugin.json` fail. |
 | **40 cli-local** | changed folders | `claude plugin validate` on each in-repo plugin folder the PR touched |
