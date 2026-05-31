@@ -30,15 +30,38 @@ or invariant changes, work under `.github/actions/`.
 
 ```
 .claude-plugin/
-  marketplace.json          # ~1700+ entries, alpha-sorted by name. Do not hand-edit.
+  marketplace.json            # ~1700+ entries, alpha-sorted by name. Do not hand-edit.
 .github/
   workflows/
-    validate-plugins.yml    # dogfoods the local validate-plugins action on every PR
-    close-external-prs.yml  # auto-closes PRs from non-collaborators
+    validate-plugins.yml      # dogfoods the local validate-plugins action on every PR
+    close-external-prs.yml    # auto-closes PRs from non-collaborators
   actions/
-    validate-plugins/       # gate: invariants + `claude plugin validate`
-    bump-plugin-shas/       # nightly maintenance: refresh stale external SHAs
-    scan-plugins/           # policy layer: Claude-based safety review (non-blocking by default)
+    README.md                 # system-level overview table of all three actions
+    validate-plugins/         # gate: invariants + `claude plugin validate`
+      action.yml
+      lib/common.sh           # shared safety predicates (also sourced by scan + bump)
+      scripts/
+        00-detect-changes.sh  # diff vs BASE_REF; assembles per-file mode
+        11-validate-invariants.sh  # I1-I11 policy hardening
+        20-validate-cli-marketplace.sh
+        30-validate-cli-external.sh  # clone + validate each external entry
+        40-validate-cli-local.sh     # validate changed in-repo plugin folders
+        41-validate-aux-files.sh     # JSON-parse .mcp.json, .lsp.json, hooks/hooks.json
+        90-report.sh           # aggregate results.jsonl into step summary
+      test-invariants.sh       # static test suite (no network)
+      test-common.sh           # static test suite (no network)
+      RELEASING.md
+      README.md
+    bump-plugin-shas/         # nightly maintenance: refresh stale external SHAs
+      action.yml
+      scripts/bump.sh
+      README.md
+    scan-plugins/             # policy layer: Claude-based safety review (non-blocking)
+      action.yml
+      scripts/scan.sh
+      policy/prompt.md        # default review prompt (overridable)
+      policy/schema.json      # JSON Schema for Claude's structured output
+      README.md
 LICENSE
 README.md
 ```
@@ -46,8 +69,16 @@ README.md
 The three actions are designed as a system (gate → policy → maintenance)
 and share `validate-plugins/lib/common.sh` for safety helpers
 (`assert_safe_url`, `assert_safe_sha`, `assert_safe_path`,
-`has_unsafe_chars`, `cli_validate`). When touching one action, check
+`has_unsafe_chars`, `cli_validate`). `scan-plugins` and
+`bump-plugin-shas` source it via `$VALIDATE_LIB` (a relative path set
+in their action.yml setup steps). When touching one action, check
 whether the same change is needed in the others.
+
+| Action | Role | Permissions | Secret |
+|---|---|---|---|
+| `validate-plugins` | **Gate** — invariants I1–I11 + `claude plugin validate` | `contents: read` | — |
+| `bump-plugin-shas` | **Maintenance** — discover stale SHAs, validate at new HEAD, open PR | `contents: write`, `pull-requests: write` | — |
+| `scan-plugins` | **Policy** — Claude-based safety review (non-blocking by default) | `contents: read` | `ANTHROPIC_API_KEY` (graceful no-op if unset) |
 
 ## Marketplace data conventions
 
@@ -99,6 +130,20 @@ in lockstep if policy changes.
 - Emit GitHub annotations with `::notice::`, `::warning file=...,line=...::`,
   `::error file=...,line=...::` rather than plain `echo` for things a
   reviewer should see.
+
+### Validation pipeline (step-by-step)
+
+The `validate-plugins` action runs these scripts in order:
+
+| Step | Script | What it does |
+|---|---|---|
+| 00 | `00-detect-changes.sh` | Diff vs `BASE_REF`, output `changes.json` with changed entries, external sources, and in-repo folders. Assembles marketplace from per-file entries if `ENTRIES_DIR` is set. |
+| 11 | `11-validate-invariants.sh` | I1–I11 policy invariants on the full marketplace. |
+| 20 | `20-validate-cli-marketplace.sh` | `claude plugin validate` on the assembled marketplace.json (canonical schema check). |
+| 30 | `30-validate-cli-external.sh` | Clone each changed external entry at its pinned SHA, run `claude plugin validate`. Skippable via `skip-external`. |
+| 40 | `40-validate-cli-local.sh` | `claude plugin validate` on each changed in-repo plugin folder. Skippable via `skip-local-folders`. |
+| 41 | `41-validate-aux-files.sh` | JSON-parse auxiliary files (`.mcp.json`, `.lsp.json`, `hooks/hooks.json`) in changed folders — catches malformed JSON that `claude plugin validate` may not surface. |
+| 90 | `90-report.sh` | Aggregate `results.jsonl` into a markdown step summary; set the `result` output. |
 
 ### Schema strategy: do not vendor
 
@@ -156,6 +201,20 @@ downstream `*-plugins` repos rely on it. If you tighten a default, ship
 it as a separately-pinned SHA so consumers can roll forward
 deliberately.
 
+### bump-plugin-shas: server-side signing via GraphQL
+
+`bump.sh` creates commits using GitHub's `createCommitOnBranch` GraphQL
+mutation rather than local `git commit` + push. Server-created commits
+are signed by GitHub's web-flow GPG key ("Verified"), satisfying
+`required_signatures` rulesets without managing any signing key on the
+runner. The marketplace file is base64-encoded in the mutation payload
+(via `jq --rawfile`, piped to `gh api --input -`) because it can exceed
+Linux's 128 KiB per-argument limit.
+
+The PR branch is force-reset to `BASE_BRANCH` HEAD on each run (one
+fresh commit replaces a stale unmerged bump). `expectedHeadOid` provides
+CAS semantics so concurrent pushes fail loudly.
+
 ### Releasing changes to the actions
 
 Consumers of these actions pin by full commit SHA, never by branch or
@@ -189,9 +248,25 @@ that's a supply-chain footgun for the consumers.
   changed-external checks. This must pass before merge.
 - `Close External PRs` — first-party hook, not a check.
 
+The workflow triggers on PRs and pushes to `main` that touch
+`.claude-plugin/**` or `.github/actions/**`. It runs the static test
+suites first, then dogfoods the local validate-plugins action (with
+`skip-local-folders: "true"` since this repo has no vendored plugins).
+
 There is no test runner, linter, or formatter beyond bash scripts and
 `jq`. Don't introduce one without a clear need; the simplicity is part
 of the design.
+
+### Running tests locally
+
+```bash
+bash .github/actions/validate-plugins/test-invariants.sh
+bash .github/actions/validate-plugins/test-common.sh
+```
+
+Both run offline (no network, no API key, no `claude` CLI needed). They
+create temporary directories, exercise the logic via synthetic fixtures,
+and clean up. Exit code 0 = pass.
 
 ### GitHub interactions
 
@@ -220,3 +295,26 @@ not ask first.
   README/action documentation. Tables are used heavily; keep that.
 - Commit messages: imperative, present-tense, descriptive of WHY (e.g.
   `validate-plugins: add I10/I11 invariants and static test suite`).
+- Prefix commit messages with the action name when touching only one
+  action (e.g. `scan-plugins:`, `bump-plugin-shas:`).
+
+## Security model (quick reference)
+
+The codebase defends against contributor-controlled strings escaping
+into shell evaluation or git argument injection:
+
+1. **Input validation** — `assert_safe_url`, `assert_safe_sha`,
+   `assert_safe_path` are called immediately before any shell use of
+   contributor data, even when schema/invariant checks already ran
+   (defense-in-depth).
+2. **Host allowlist** — `ALLOWED_HOSTS` (default: `github.com`,
+   `gitlab.com`, `bitbucket.org`). Bare IPs always rejected. Subdomains
+   accepted.
+3. **Index-derived paths** — clone targets use `ext-$idx`, never
+   user/plugin names. Prevents path injection.
+4. **`--` discipline** — every `git` invocation uses end-of-options
+   markers and double-quoted arguments.
+5. **No execution of cloned content** — `claude plugin validate` is a
+   static check. Nothing from cloned repos is sourced/executed.
+6. **GraphQL commit creation** — `bump-plugin-shas` creates commits
+   server-side; no signing key on the runner, nothing to leak.
