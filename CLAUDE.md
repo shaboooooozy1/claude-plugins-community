@@ -69,7 +69,8 @@ README.md
 The three actions are designed as a system (gate → policy → maintenance)
 and share `validate-plugins/lib/common.sh` for safety helpers
 (`assert_safe_url`, `assert_safe_sha`, `assert_safe_path`,
-`has_unsafe_chars`, `cli_validate`). `scan-plugins` and
+`assert_safe_string`, `has_unsafe_chars`, `cli_validate`).
+`scan-plugins` and
 `bump-plugin-shas` source it via `$VALIDATE_LIB` (a relative path set
 in their action.yml setup steps). When touching one action, check
 whether the same change is needed in the others.
