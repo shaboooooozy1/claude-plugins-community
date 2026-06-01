@@ -35,9 +35,13 @@ record_result() {
 # ---- safety predicates / assertions ---------------------------------------
 
 # Returns 0 if the value contains shell metacharacters or whitespace.
+# Newline/CR are rejected explicitly ($'\n'/$'\r'): they are not caught by the
+# space/tab patterns, and an embedded newline in a path/subdir/source field is
+# both illegitimate and a classic log/workflow-command injection vector. URL and
+# SHA call sites are additionally anchored by their own ^...$ regexes.
 has_unsafe_chars() {
   case "$1" in
-    *'$'*|*'`'*|*';'*|*'&'*|*'|'*|*'('*|*')'*|*'<'*|*'>'*|*' '*|*'	'*|*'"'*|*"'"*|*'\'*)
+    *'$'*|*'`'*|*';'*|*'&'*|*'|'*|*'('*|*')'*|*'<'*|*'>'*|*' '*|*'	'*|*$'\n'*|*$'\r'*|*'"'*|*"'"*|*'\'*)
       return 0 ;;
   esac
   return 1
