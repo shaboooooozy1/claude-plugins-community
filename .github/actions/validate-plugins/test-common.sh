@@ -46,6 +46,8 @@ assert_returns_0       "rejects parens"        has_unsafe_chars 'a(b)'
 assert_returns_0       "rejects redirects"     has_unsafe_chars 'a>b'
 assert_returns_0       "rejects whitespace"    has_unsafe_chars 'a b'
 assert_returns_0       "rejects tab"           has_unsafe_chars $'a\tb'
+assert_returns_0       "rejects newline"       has_unsafe_chars $'a\nb'
+assert_returns_0       "rejects carriage rtn"  has_unsafe_chars $'a\rb'
 assert_returns_0       "rejects single quote"  has_unsafe_chars "a'b"
 assert_returns_0       "rejects double quote"  has_unsafe_chars 'a"b'
 assert_returns_0       "rejects backslash"     has_unsafe_chars 'a\b'
@@ -69,6 +71,7 @@ assert_returns_nonzero "parent traversal"        assert_safe_path "../escape"
 assert_returns_nonzero "embedded traversal"      assert_safe_path "a/../b"
 assert_returns_nonzero "metacharacter in path"   assert_safe_path 'a;rm/b'
 assert_returns_nonzero "whitespace in path"      assert_safe_path 'a b'
+assert_returns_nonzero "newline in path"         assert_safe_path $'a\nb'
 
 # ---- assert_safe_url -------------------------------------------------------
 echo "-- assert_safe_url"
