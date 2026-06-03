@@ -193,6 +193,149 @@ else
   failures=$((failures+1))
 fi
 
+# ---- I3 upper boundary and trailing whitespace --------------------------------
+
+# I3: description exactly 2000 chars must pass.
+desc2000="$(jq -rn '"a" * 2000')"
+f=$(mk i3_max); jq -n --arg d "$desc2000" '{"plugins":[{"name":"aaa","description":$d,"source":{"source":"url","url":"https://github.com/x/y","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}]}' > "$f"
+assert_clean "I3 description exactly 2000 chars" "$f"
+
+# I3: description 2001 chars must fire.
+desc2001="$(jq -rn '"a" * 2001')"
+f=$(mk i3_over); jq -n --arg d "$desc2001" '{"plugins":[{"name":"aaa","description":$d,"source":{"source":"url","url":"https://github.com/x/y","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}]}' > "$f"
+assert_fires "I3 description 2001 chars" I3 "$f"
+
+# I3: trailing-only whitespace in description.
+f=$(mk i3_trail <<'EOF'
+{"plugins":[{"name":"abc","description":"ten chars ok ","source":"./x"}]}
+EOF
+); assert_fires "I3 trailing whitespace in description" I3 "$f"
+
+# ---- I4 owner/repo shorthand --------------------------------------------------
+
+f=$(mk i4_shorthand <<'EOF'
+{"plugins":[{"name":"abc","description":"ten chars ok","source":{"source":"url","url":"owner/repo-name","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}]}
+EOF
+); assert_clean "I4 owner/repo shorthand accepted" "$f"
+
+# ---- I5 malformed SHA ---------------------------------------------------------
+
+f=$(mk i5_short <<'EOF'
+{"plugins":[{"name":"abc","description":"ten chars ok","source":{"source":"url","url":"https://github.com/x/y","sha":"abcdef1234"}}]}
+EOF
+); assert_fires "I5 short sha (10 chars)" I5 "$f"
+
+f=$(mk i5_upper <<'EOF'
+{"plugins":[{"name":"abc","description":"ten chars ok","source":{"source":"url","url":"https://github.com/x/y","sha":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}}]}
+EOF
+); assert_fires "I5 uppercase sha" I5 "$f"
+
+# ---- I8 path exists but no plugin.json ----------------------------------------
+
+mkdir -p "$TMP/exists-dir/.claude-plugin"
+f=$(mk i8_nomanifest <<'EOF'
+{"plugins":[{"name":"abc","description":"ten chars ok","source":"./exists-dir"}]}
+EOF
+)
+total=$((total+1))
+i8_out="$(
+  cd "$TMP"
+  export VALIDATE_TMP="$TMP/v-i8" MARKETPLACE_PATH="$f" BASE_REF=HEAD WARN_INVARIANTS="" ENTRIES_DIR=""
+  rm -rf "$VALIDATE_TMP"; mkdir -p "$VALIDATE_TMP"
+  cp "$f" "$VALIDATE_TMP/marketplace.json"
+  bash "$ACTION_PATH/scripts/11-validate-invariants.sh" 2>&1 || true
+)"
+if grep -q "invariant I8:" <<<"$i8_out"; then
+  echo "  PASS I8 path exists but no plugin.json — I8 fires"
+else
+  echo "  FAIL I8 path exists but no plugin.json — expected I8 to fire"
+  failures=$((failures+1))
+fi
+
+# ---- I10 hidden Unicode in name -----------------------------------------------
+
+# ZWSP in the name field (not just description)
+f=$(mk i10_name); printf '{"plugins":[{"name":"ab​c","description":"ten chars ok ok ok","source":"./x"}]}' > "$f"
+assert_fires "I10 hidden unicode in name" I10 "$f"
+
+# BOM (U+FEFF) in description
+f=$(mk i10_bom); printf '{"plugins":[{"name":"abc","description":"hello\xef\xbb\xbfworld ok ok","source":"./x"}]}' > "$f"
+assert_fires "I10 BOM in description" I10 "$f"
+
+# ---- I11 name boundary --------------------------------------------------------
+
+f=$(mk i11_1char <<'EOF'
+{"plugins":[{"name":"a","description":"ten chars ok","source":"./x"}]}
+EOF
+); assert_fires "I11 single-char name" I11 "$f"
+
+f=$(mk i11_2char <<'EOF'
+{"plugins":[{"name":"ab","description":"ten chars ok","source":{"source":"url","url":"https://github.com/x/y","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}]}
+EOF
+); assert_clean "I11 two-char name" "$f"
+
+name64="$(jq -rn '"a" * 64')"
+f=$(mk i11_64); jq -n --arg n "$name64" '{"plugins":[{"name":$n,"description":"ten chars ok","source":{"source":"url","url":"https://github.com/x/y","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}]}' > "$f"
+assert_clean "I11 64-char name" "$f"
+
+name65="$(jq -rn '"a" * 65')"
+f=$(mk i11_65); jq -n --arg n "$name65" '{"plugins":[{"name":$n,"description":"ten chars ok","source":{"source":"url","url":"https://github.com/x/y","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}]}' > "$f"
+assert_fires "I11 65-char name" I11 "$f"
+
+f=$(mk i11_hyphen <<'EOF'
+{"plugins":[{"name":"-abc","description":"ten chars ok","source":"./x"}]}
+EOF
+); assert_fires "I11 name starts with hyphen" I11 "$f"
+
+# ---- FAIL_ON_WARNINGS ---------------------------------------------------------
+
+total=$((total+1))
+f=$(mk fow <<'EOF'
+{"plugins":[{"name":"zzz","description":"ten chars ok","source":{"source":"url","url":"https://github.com/x/y","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},{"name":"aaa","description":"ten chars ok","source":{"source":"url","url":"https://github.com/x/y","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}]}
+EOF
+)
+set +e
+fow_out="$(
+  export VALIDATE_TMP="$TMP/v-fow" MARKETPLACE_PATH="$f" BASE_REF=HEAD WARN_INVARIANTS="I1" FAIL_ON_WARNINGS=true
+  rm -rf "$VALIDATE_TMP"; mkdir -p "$VALIDATE_TMP"
+  cp "$f" "$VALIDATE_TMP/marketplace.json"
+  bash scripts/11-validate-invariants.sh 2>&1
+)"
+fow_exit=$?
+set -e
+if [[ "$fow_exit" -ne 0 ]]; then
+  echo "  PASS FAIL_ON_WARNINGS=true makes warning-tier invariant fail"
+else
+  echo "  FAIL FAIL_ON_WARNINGS=true — expected non-zero exit, got 0"
+  failures=$((failures+1))
+fi
+
+# ---- Multiple invariants fire simultaneously -----------------------------------
+
+total=$((total+1))
+f=$(mk multi <<'EOF'
+{"plugins":[{"name":"Zzz_bad","description":"short","source":{"source":"url","url":"https://github.com/x/y"}},{"name":"aaa","description":"ten chars ok","source":{"source":"url","url":"https://github.com/x/y","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}]}
+EOF
+)
+multi_out="$(
+  export VALIDATE_TMP="$TMP/v-multi" MARKETPLACE_PATH="$f" BASE_REF=HEAD WARN_INVARIANTS="" ENTRIES_DIR=""
+  rm -rf "$VALIDATE_TMP"; mkdir -p "$VALIDATE_TMP"
+  cp "$f" "$VALIDATE_TMP/marketplace.json"
+  bash scripts/11-validate-invariants.sh 2>&1 || true
+)"
+multi_codes=0
+grep -q "invariant I1:" <<<"$multi_out" && multi_codes=$((multi_codes+1))
+grep -q "invariant I3:" <<<"$multi_out" && multi_codes=$((multi_codes+1))
+grep -q "invariant I5:" <<<"$multi_out" && multi_codes=$((multi_codes+1))
+grep -q "invariant I11:" <<<"$multi_out" && multi_codes=$((multi_codes+1))
+if [[ "$multi_codes" -ge 4 ]]; then
+  echo "  PASS Multiple invariants fire simultaneously (I1+I3+I5+I11)"
+else
+  echo "  FAIL Multiple invariants fire simultaneously — expected 4 codes, found $multi_codes"
+  grep -E '::error|::warning' <<<"$multi_out" | sed 's/^/    /'
+  failures=$((failures+1))
+fi
+
 echo
 echo "=== $((total-failures))/$total passed ==="
 [[ "$failures" -eq 0 ]]
