@@ -168,7 +168,7 @@ must stay green.
 | Script | Covers | Run when you touch |
 |---|---|---|
 | `test-invariants.sh` | I1–I11 against synthetic `marketplace.json` fixtures; plus a real-git fixture for I7 (per-file mode, `BASE_REF=HEAD~1`); plus boundary/false-positive guards and `WARN_INVARIANTS` demotion behaviour | `scripts/11-validate-invariants.sh` |
-| `test-common.sh` | The `lib/common.sh` security predicates directly: `has_unsafe_chars`, `assert_safe_sha`, `assert_safe_path`, `assert_safe_url` (allowlist match, lookalike-host rejection, SSRF guards) | `lib/common.sh` |
+| `test-common.sh` | The `lib/common.sh` security predicates directly: `has_unsafe_chars` (shell metacharacters plus explicit newline/CR rejection), `assert_safe_sha`, `assert_safe_path`, `assert_safe_url` (allowlist match, lookalike-host rejection, SSRF guards) | `lib/common.sh` |
 
 Adding a new invariant means adding at least one fixture that exercises
 it (a positive case) plus a false-positive guard for any boundary it
@@ -193,7 +193,8 @@ WARN_INVARIANTS="I1 I3 I5 I8"
 i.e. sort-order, description length/whitespace, missing SHA, and
 missing vendored-plugin manifest are **non-blocking by default**. The
 hard-blocking invariants are I2 (dup names), I4 (non-https URLs), I6/I7
-(per-file mode integrity), I9 (shell metacharacters), I10 (hidden
+(per-file mode integrity), I9 (shell metacharacters, including
+embedded newline/CR), I10 (hidden
 Unicode), I11 (name regex). Consumers can override `WARN_INVARIANTS`
 (empty string = everything blocks) or set `FAIL_ON_WARNINGS=true` to
 turn the warning tier into hard failures. Keep this contract stable —
