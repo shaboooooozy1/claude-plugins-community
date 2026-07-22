@@ -125,3 +125,47 @@ cli_validate() {
   return 1
 }
 
+# ---- external manifest resolution ------------------------------------------
+# Resolve the plugin manifest to validate for an external (cloned) plugin.
+# Echoes the manifest path on success (rc 0); rc 1 = no manifest found and the
+# entry is NOT strict:false.
+#
+# Why the strict:false branch exists: a strict:false (skills-only) plugin
+# legitimately ships NO plugin.json — the marketplace SYNTHESIZES a manifest from
+# the entry's inline fields plus auto-discovered skills/commands/agents, and the
+# plugin loads fine. But `claude plugin validate` operates on a manifest file, so
+# without this branch step 30 hard-fails every strict:false external plugin for
+# "no plugin manifest" — a false positive. We mirror the marketplace by
+# synthesizing a minimal manifest ({name}) into the cloned target and validating
+# that. (The clone/SHA/subdir checks in step 30 still run first; the marketplace-
+# level schema check in step 20 still validates the entry holistically.)
+#
+# Synthesis writes ONLY into the throwaway clone dir (removed after validation),
+# never the source repo. Args: $1=target dir, $2=entry name, $3=strict ("false"
+# relaxes; any other value, incl. unset/true, requires a real manifest).
+#
+# Exit codes (so the caller need not re-derive what happened):
+#   0 = an existing manifest was found and is echoed
+#   2 = no manifest existed; a minimal one was synthesized (strict:false) + echoed
+#   1 = no manifest and not strict:false, OR synthesis failed (fail-closed: the
+#       caller treats this as a hard "no manifest" failure rather than validating
+#       a path that may not exist — see the set -e/subshell note below).
+# NOTE: when called as `m="$(resolve_external_manifest …)"`, set -e is suppressed
+# inside the command-substitution subshell, so the mkdir/jq guards below MUST
+# return explicitly rather than relying on errexit to abort on failure.
+resolve_external_manifest() {
+  local target="$1" name="$2" strict="${3:-true}"
+  if [[ -f "$target/.claude-plugin/plugin.json" ]]; then
+    printf '%s' "$target/.claude-plugin/plugin.json"; return 0
+  fi
+  if [[ -f "$target/plugin.json" ]]; then
+    printf '%s' "$target/plugin.json"; return 0
+  fi
+  if [[ "$strict" == "false" ]]; then
+    mkdir -p "$target/.claude-plugin" || return 1
+    jq -n --arg name "$name" '{name: $name}' > "$target/.claude-plugin/plugin.json" || return 1
+    printf '%s' "$target/.claude-plugin/plugin.json"; return 2
+  fi
+  return 1
+}
+

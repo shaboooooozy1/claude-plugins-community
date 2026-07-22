@@ -18,7 +18,7 @@ group_start "CLI: claude plugin validate (external plugins)"
 
 if [[ "${VALIDATE_ALL_EXTERNAL:-false}" == "true" ]]; then
   log "validate-all-external is set: scanning every external entry"
-  jq -c '[.plugins[] | select(.source|type=="object") | {name, source}]' -- "$MP" \
+  jq -c '[.plugins[] | select(.source|type=="object") | {name, source, strict}]' -- "$MP" \
     > "$VALIDATE_TMP/external-targets.json"
 else
   jq -c '.external' -- "$CHANGES" > "$VALIDATE_TMP/external-targets.json"
@@ -44,6 +44,8 @@ while IFS= read -r ext; do
   url="$(jq -r '.source.url // .source.repo // empty' <<<"$ext")"
   sha="$(jq -r '.source.sha // empty' <<<"$ext")"
   subdir="$(jq -r '.source.path // ""' <<<"$ext")"
+  # Only an explicit strict:false relaxes the manifest requirement (skills-only).
+  strict="$(jq -r 'if .strict == false then "false" else "true" end' <<<"$ext")"
 
   log "---- $name ($kind) ----"
 
@@ -106,17 +108,20 @@ while IFS= read -r ext; do
     fi
   fi
 
-  manifest="$target/.claude-plugin/plugin.json"
-  if [[ ! -f "$manifest" ]]; then
-    if [[ -f "$target/plugin.json" ]]; then
-      manifest="$target/plugin.json"
-    else
-      error "$name: no plugin manifest (.claude-plugin/plugin.json or plugin.json) — $ref"
-      record_result "cli-external" "fail" "$name" "no plugin manifest — $ref"
-      failures=$((failures+1))
-      continue
-    fi
+  # Resolve the manifest to validate. strict:false (skills-only) plugins ship no
+  # plugin.json — the marketplace synthesizes one — so the helper synthesizes a
+  # minimal manifest for them rather than hard-failing (the false-positive class).
+  # rc: 0=existing manifest, 2=synthesized, 1=none/synthesis-failed.
+  mrc=0
+  manifest="$(resolve_external_manifest "$target" "$name" "$strict")" || mrc=$?
+  if [[ "$mrc" -eq 1 ]]; then
+    error "$name: no plugin manifest (.claude-plugin/plugin.json or plugin.json) — $ref"
+    record_result "cli-external" "fail" "$name" "no plugin manifest — $ref"
+    failures=$((failures+1))
+    continue
   fi
+  [[ "$mrc" -eq 2 ]] \
+    && log "  (strict:false) no plugin manifest in source; synthesized a minimal one — $ref"
 
   if out="$(timeout "$TIMEOUT_SECS" claude plugin validate "$manifest" 2>&1)"; then
     log "  ✓ $name OK — $ref"

@@ -8,9 +8,12 @@ Companion to [`validate-plugins`](../validate-plugins/) and
 step-summary table. Set `fail-on-findings: true` to make policy failures fail
 the job.
 
-**Bot-free.** Needs only an `ANTHROPIC_API_KEY` secret (org or repo level). If
-the secret is unset, the action skips gracefully — so you can add the workflow
-everywhere and roll the secret out incrementally.
+**Bot-free.** Needs only Anthropic API auth — either an `ANTHROPIC_API_KEY`
+secret, or [Workload Identity Federation](https://github.com/anthropics/claude-code-action/blob/main/docs/setup.md)
+inputs (`anthropic-federation-rule-id` etc.) which exchange the calling job's
+GitHub OIDC token for a short-lived access token (no static key). If neither
+is set, the action skips gracefully — so you can add the workflow everywhere
+and roll auth out incrementally.
 
 ## The policy prompt
 
@@ -65,13 +68,20 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write   # only needed for the WIF auth path
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: anthropics/claude-plugins-community/.github/actions/scan-plugins@<PINNED-SHA>
         with:
+          # Auth: EITHER a static key …
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # … OR Workload Identity Federation (no static key; needs
+          # id-token: write above). Set one or the other, not both.
+          # anthropic-federation-rule-id: fdrl_...
+          # anthropic-organization-id: <org-uuid>
+          # anthropic-service-account-id: svac_...
           # fail-on-findings: "true"   # uncomment to hard-block
 ```
 
@@ -79,7 +89,10 @@ jobs:
 
 | Input | Default | |
 |---|---|---|
-| `anthropic-api-key` | `""` | if empty, the scan is skipped (graceful no-op) |
+| `anthropic-api-key` | `""` | static key. If neither this nor `anthropic-federation-rule-id` is set, the scan is skipped (graceful no-op) |
+| `anthropic-federation-rule-id` | `""` | WIF rule ID (`fdrl_...`). When set, the action mints a GitHub OIDC token; the CLI exchanges it. Requires `permissions: id-token: write` on the calling job |
+| `anthropic-organization-id` | `""` | required when `anthropic-federation-rule-id` is set |
+| `anthropic-service-account-id` | `""` | required when `anthropic-federation-rule-id` is set |
 | `marketplace-path` | `.claude-plugin/marketplace.json` | |
 | `base-ref` | PR base / push `before` / `origin/main` | |
 | `fail-on-findings` | `false` | if true, `passes:false` fails the job |

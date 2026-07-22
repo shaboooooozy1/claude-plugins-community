@@ -58,6 +58,8 @@ jobs:
 | `marketplace-path` | `.claude-plugin/marketplace.json` | |
 | `max-bumps` | `20` | cap per run |
 | `allowed-hosts` | `github.com gitlab.com bitbucket.org` | same SSRF allowlist as validate-plugins |
+| `sha-exempt` | `""` | deliberately-unpinned plugin names to skip (else nightly re-pins them); same list as validate-plugins |
+| `freeze-shas` | `""` | PINNED plugin names to hold at their current `source.sha` (skip the bump) — e.g. a security freeze pending an upstream fix-forward. Distinct from `sha-exempt`: a frozen entry keeps its sha, an exempt one has none. Remove the name to resume bumping. A listed name that matches no pinned entry — or whose name is outside `[a-z0-9-]{2,64}` — is surfaced as a workflow `::warning` (the pin is **not** protected), so a typo'd freeze can't fail silently. |
 | `claude-cli-version` | `latest` | **pin in your workflow** |
 | `npm-registry` | `""` | optional internal mirror |
 | `pr-branch` | `bump/plugin-shas` | |

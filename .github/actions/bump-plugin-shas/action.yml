@@ -20,14 +20,46 @@ inputs:
   allowed-hosts:
     description: Space-separated allowlist of git hosts (same semantics as validate-plugins)
     default: "github.com gitlab.com bitbucket.org"
+  sha-exempt:
+    description: >
+      Space-separated plugin names that intentionally have no source.sha
+      (deliberately unpinned; see the validate-plugins input of the same
+      name). These entries are skipped entirely — without this, an entry
+      with no sha looks permanently stale and gets re-pinned every night.
+    default: ""
+  freeze-shas:
+    description: >
+      Space-separated plugin names PINNED at a specific source.sha that must
+      NOT be auto-bumped — the current pin is frozen in place. Distinct from
+      sha-exempt (which is for deliberately UNPINNED entries): a frozen entry
+      keeps its sha and is skipped from the nightly bump, so the pin can't
+      advance until the name is removed here. Use to hold a plugin at a known
+      SHA pending a security review / fix-forward of an upstream change.
+    default: ""
+  only:
+    description: >
+      Bump ONLY this plugin name (exact marketplace entry name). Empty = all
+      stale entries (default nightly behavior). Honors the same open-PR skip,
+      sha-exempt, and freeze-shas handling as a full run for the targeted name.
+    default: ""
   claude-cli-version:
     description: Version of @anthropic-ai/claude-code to install
     default: latest
   npm-registry:
     description: Optional npm registry URL for tooling installs
     default: ""
+  pr-mode:
+    description: >
+      "batch" — single PR (pr-branch, force-reset nightly) containing all
+      passing bumps; failures revert via the downstream revert workflow.
+      "per-entry" — one PR per bumped plugin on branch bump/<name>; failures
+      stay open in their own PR for triage. Required for downstream per-PR
+      verdict emission and `/triage-bump-prs --repo official`.
+    default: batch
   pr-branch:
-    description: Branch name for the bump PR
+    description: >
+      Branch name for the bump PR (batch mode only). In per-entry mode, the
+      branch is derived per-entry as bump/<sanitized-name>.
     default: bump/plugin-shas
   base-branch:
     description: Branch to open the PR against
@@ -41,11 +73,18 @@ outputs:
     description: JSON array of {name, old_sha, new_sha} that were bumped
     value: ${{ steps.bump.outputs.bumped }}
   skipped:
-    description: JSON array of {name, reason} that were skipped (validation failed / unreachable)
+    description: JSON array of {name, reason} that were skipped (validation failed / unreachable / open PR)
     value: ${{ steps.bump.outputs.skipped }}
   pr-url:
-    description: URL of the bump PR (empty if nothing to bump)
+    description: URL of the bump PR in batch mode (empty in per-entry mode or when nothing to bump)
     value: ${{ steps.bump.outputs.pr-url }}
+  pr-urls:
+    description: >
+      JSON array of {name, old_sha, new_sha, branch, pr_url} for each bump
+      that produced a PR. Empty in batch mode (use pr-url instead) or when
+      nothing to bump. Consumed by per-entry callers to fan out scan
+      dispatches and downstream triage.
+    value: ${{ steps.bump.outputs.pr-urls }}
 
 runs:
   using: composite
@@ -80,7 +119,43 @@ runs:
         CLAUDE_CLI_VERSION: ${{ inputs.claude-cli-version }}
       run: |
         set -euo pipefail
-        npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}"
+        # See validate-plugins/action.yml for the full rationale. claude-code ships
+        # its runtime as a platform-native OPTIONAL dep fetched by postinstall; on
+        # hosted runners that fetch intermittently stalls or is skipped, leaving
+        # "added 1 package" but no usable `claude` binary. Make the install
+        # self-healing: force the optional dep, verify, re-run the postinstall on a
+        # miss, bound every network step with a timeout, retry with real reinstalls.
+        PKG="@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}"
+        pkg_root() { echo "$(npm root -g 2>/dev/null || true)/@anthropic-ai/claude-code"; }
+        clean_state() {
+          local root; root="$(pkg_root)"
+          [[ "$root" == */node_modules/@anthropic-ai/claude-code ]] && rm -rf "$root" 2>/dev/null || true
+          npm cache clean --force >/dev/null 2>&1 || true
+        }
+        install_attempt() { timeout -k 10 300 npm install -g --include=optional "$PKG"; }
+        heal_postinstall() {
+          local root; root="$(pkg_root)"
+          if [[ -f "$root/install.cjs" ]]; then
+            echo "claude binary missing after install; running postinstall: $root/install.cjs"
+            timeout -k 10 300 node "$root/install.cjs" || true
+          fi
+        }
+        ok=""
+        for attempt in 1 2 3; do
+          echo "::group::Install claude CLI (attempt ${attempt}/3)"
+          [[ "$attempt" -gt 1 ]] && clean_state
+          install_attempt || echo "npm install attempt ${attempt} failed or timed out"
+          if claude --version 2>/dev/null; then ok=1; echo "::endgroup::"; break; fi
+          heal_postinstall
+          if claude --version 2>/dev/null; then ok=1; echo "::endgroup::"; break; fi
+          echo "::endgroup::"
+          [[ "$attempt" -lt 3 ]] && sleep $((attempt * 10))
+        done
+        if [[ -z "$ok" ]]; then
+          echo "::error::claude CLI did not become usable after 3 attempts (native-binary fetch failing — see logs above)." >&2
+          echo "diag: node=$(node --version 2>/dev/null) npm=$(npm --version 2>/dev/null) omit=$(npm config get omit 2>/dev/null)" >&2
+          exit 1
+        fi
         claude --version
 
     - name: Discover, validate, and open PR
@@ -90,6 +165,10 @@ runs:
         MARKETPLACE_PATH: ${{ inputs.marketplace-path }}
         MAX_BUMPS: ${{ inputs.max-bumps }}
         ALLOWED_HOSTS: ${{ inputs.allowed-hosts }}
+        SHA_EXEMPT: ${{ inputs.sha-exempt }}
+        FREEZE_SHAS: ${{ inputs.freeze-shas }}
+        ONLY: ${{ inputs.only }}
+        PR_MODE: ${{ inputs.pr-mode }}
         PR_BRANCH: ${{ inputs.pr-branch }}
         BASE_BRANCH: ${{ inputs.base-branch }}
         GH_TOKEN: ${{ inputs.github-token }}

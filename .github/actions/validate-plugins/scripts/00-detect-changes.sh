@@ -99,7 +99,7 @@ changed_external_json="$(
     '[.plugins[]
       | select(.name as $n | $names | index($n))
       | select(.source | type == "object")
-      | {name, source}]' \
+      | {name, source, strict}]' \
     "$VALIDATE_TMP/marketplace.json"
 )"
 
@@ -133,11 +133,19 @@ log "Changed in-repo plugin folders: $changed_folders_json"
 
 # ---- write outputs ---------------------------------------------------------
 
+# Assemble changes.json via FILE inputs (--slurpfile), NOT --argjson: a large
+# changed-set (e.g. a bulk SHA bump touching ~900 entries) makes these arrays
+# exceed the kernel single-arg limit (MAX_ARG_STRLEN, ~128KB), so --argjson dies
+# with "Argument list too long" (exit 126). Mirrors the file-input pattern used
+# for the >1MB marketplace above. Each file holds one JSON array → $var[0].
+printf '%s' "$changed_entries_json"  > "$VALIDATE_TMP/_changed-entries.json"
+printf '%s' "$changed_external_json" > "$VALIDATE_TMP/_changed-external.json"
+printf '%s' "$changed_folders_json"  > "$VALIDATE_TMP/_changed-folders.json"
 jq -n \
-  --argjson entries "$changed_entries_json" \
-  --argjson external "$changed_external_json" \
-  --argjson folders "$changed_folders_json" \
-  '{entries:$entries, external:$external, folders:$folders}' \
+  --slurpfile entries  "$VALIDATE_TMP/_changed-entries.json" \
+  --slurpfile external "$VALIDATE_TMP/_changed-external.json" \
+  --slurpfile folders  "$VALIDATE_TMP/_changed-folders.json" \
+  '{entries:$entries[0], external:$external[0], folders:$folders[0]}' \
   > "$VALIDATE_TMP/changes.json"
 
 {

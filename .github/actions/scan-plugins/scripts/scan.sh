@@ -4,7 +4,14 @@
 
 source "$VALIDATE_LIB"
 
-: "${ANTHROPIC_API_KEY:?}"
+# Auth: either a static API key, or the WIF env-var set (the action's mint
+# step exports ANTHROPIC_FEDERATION_RULE_ID + _IDENTITY_TOKEN_FILE etc.; the
+# claude CLI reads those and exchanges the JWT itself). Unset an empty
+# ANTHROPIC_API_KEY so the CLI doesn't see a blank X-Api-Key header.
+if [[ -z "${ANTHROPIC_API_KEY:-}" && -z "${ANTHROPIC_FEDERATION_RULE_ID:-}" ]]; then
+  die "no Anthropic auth: need ANTHROPIC_API_KEY or ANTHROPIC_FEDERATION_RULE_ID"
+fi
+[[ -z "${ANTHROPIC_API_KEY:-}" ]] && unset ANTHROPIC_API_KEY
 : "${MARKETPLACE_PATH:?}"
 : "${BASE_REF:?}"
 : "${ALLOWED_HOSTS:?}"

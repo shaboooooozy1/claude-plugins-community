@@ -10,6 +10,13 @@ on:
     paths:
       - '.claude-plugin/**'
       - '.github/actions/**'
+  # `validate` is dispatched by bump-plugin-shas.yml against each per-entry bump
+  # branch. A PR opened with GITHUB_TOKEN does not fire on:pull_request (GitHub's
+  # recursion guard), so this required check would never report on a bump PR and
+  # the PR could never go green/mergeable. workflow_dispatch is exempt from that
+  # guard; the dispatched run's check lands on the branch HEAD (= the bump PR's
+  # head SHA) and satisfies the required check.
+  workflow_dispatch:
 
 jobs:
   validate:
@@ -27,9 +34,19 @@ jobs:
       - name: Static common.sh predicate tests
         run: bash .github/actions/validate-plugins/test-common.sh
 
+      - name: bump-plugin-shas skip/freeze tests
+        run: bash .github/actions/bump-plugin-shas/test-bump.sh
+
+      - name: bump-plugin-shas manifest-synthesis tests
+        run: bash .github/actions/bump-plugin-shas/test-bump-manifest.sh
+
+      - name: External manifest resolution tests
+        run: bash .github/actions/validate-plugins/test-external-manifest.sh
+
       # Dogfood: this repo uses its own local copy of the action.
       # External consumers MUST pin a SHA — see the action README.
       - uses: ./.github/actions/validate-plugins
         with:
           marketplace-path: .claude-plugin/marketplace.json
           skip-local-folders: "true"
+          scope-errors-to-changed: "true"

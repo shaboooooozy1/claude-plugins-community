@@ -17,6 +17,20 @@ jobs:
           script: |
             const author = context.payload.pull_request.user.login;
 
+            // Exempt this repo's own automation: bump-plugin-shas.yml opens its
+            // freshness PR with the default GITHUB_TOKEN, so the author is
+            // github-actions[bot]. Without this, close-external-prs would
+            // auto-close every nightly bump PR. Match on AUTHOR ONLY — never on
+            // head.ref: this is a pull_request_target workflow (runs with a write
+            // token in the base-repo context on fork PRs), and a fork can open a
+            // PR from a branch literally named `bump/plugin-shas`, so a ref-based
+            // exemption would be spoofable. `user.login` is the authenticated
+            // opener and is not fork-controllable.
+            if (author === 'github-actions[bot]') {
+              console.log(`${author} is this repo's bump automation — allowing PR`);
+              return;
+            }
+
             const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
               owner: context.repo.owner,
               repo: context.repo.repo,

@@ -27,7 +27,7 @@ canonical schema. These do not track upstream — they are this org's policy flo
 |---|---|---|
 | **11 invariants** | full marketplace | I1–I11 hardening rules (sort, dups, desc bounds, https-only, SHA-pin required, filename match, no-direct-edit, vendored-path-exists, no shell metacharacters, no hidden-Unicode, name regex) |
 | **20 cli-marketplace** | full marketplace | `claude plugin validate <marketplace.json>` — the canonical schema check |
-| **30 cli-external** | changed entries (or all, if `validate-all-external`) | clone each external plugin at its pinned SHA, run `claude plugin validate`. Exactly as strict as the CLI — extra keys in `plugin.json` fail. |
+| **30 cli-external** | changed entries (or all, if `validate-all-external`) | clone each external plugin at its pinned SHA. For entries that ship a `plugin.json`, run `claude plugin validate` against it — exactly as strict as the CLI, extra keys fail. For `strict:false` (skills-only) entries with no `plugin.json`, synthesize a minimal manifest (mirrors how the marketplace loads them) and validate that, instead of failing for a missing manifest. |
 | **40 cli-local** | changed folders | `claude plugin validate` on each in-repo plugin folder the PR touched |
 | **41 aux-files** | changed folders | JSON-parse `.mcp.json` / `.lsp.json` / `hooks/hooks.json` (runtime always-probes these; malformed = crash) |
 
@@ -112,6 +112,8 @@ Repos that store one entry per file (e.g. `.claude-plugin/plugins/<name>.json`):
 | `entries-dir` | `""` | set for per-file repos; enables I6/I7 |
 | `base-ref` | PR base / push `before` / `origin/main` | diff base for change detection |
 | `warn-invariants` | `"I1 I3 I5 I8"` | invariant codes treated as WARN instead of ERROR |
+| `sha-exempt` | `""` | plugin names allowed to omit `source.sha` (I5); malformed SHAs still fail; pair with the same list on bump-plugin-shas |
+| `scope-errors-to-changed` | `false` | when `true`, a per-entry invariant violation (I3-I6, I8-I11) on an entry the PR did **not** change is downgraded ERROR→WARNING, so a preexisting base-branch defect can't block an unrelated PR; the entry-name-less whole-marketplace invariants (I1/I2/I7) always error. Defeated by `fail-on-warnings`. |
 | `skip-external` | `false` | disable step 30 |
 | `skip-local-folders` | `false` | disable steps 40/41 |
 | `fail-on-warnings` | `false` | treat warnings as failures (steps 11/20/40) |
@@ -126,7 +128,7 @@ Repos that store one entry per file (e.g. `.claude-plugin/plugins/<name>.json`):
 | Output | |
 |---|---|
 | `changed-entries` | JSON array of entry names |
-| `changed-external` | JSON array of `{name, source}` |
+| `changed-external` | JSON array of `{name, source, strict}` — `strict` is `false` only when explicitly set; absent/null ⇒ treated as strict |
 | `changed-folders` | JSON array of folder paths |
 | `result` | `pass` / `fail` |
 | `report-path` | markdown report path |
@@ -155,6 +157,10 @@ source kinds added by the CLI are hardened automatically.
 - External plugin validation (step 30) clones into an isolated temp directory,
   checks out the exact pinned SHA, and runs only `claude plugin validate`
   (a static manifest check). **No code from the cloned repo is executed.**
+- For a `strict:false` entry with no `plugin.json`, step 30 writes a synthesized
+  minimal manifest into the isolated clone dir (via `jq -n`, a system tool)
+  before validating. Nothing from the cloned repo is read or run to produce it,
+  and the clone dir is discarded after validation.
 - **SSRF guard:** before any clone, the URL host is checked against
   `allowed-hosts`. Bare IP addresses are always rejected.
 - All contributor-controlled values (`url`, `repo`, `sha`, `path`) are
