@@ -1,0 +1,4 @@
+{
+  "name": "claude-plugins-community",
+  "install": "bash .cursor/install.sh"
+}
