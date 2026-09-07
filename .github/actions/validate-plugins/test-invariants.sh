@@ -193,6 +193,26 @@ else
   failures=$((failures+1))
 fi
 
+# FAIL_ON_WARNINGS: same fixture as warn_mode (I1 demoted), but with
+# FAIL_ON_WARNINGS=true the script should exit non-zero.
+total=$((total+1))
+set +e
+fow_out="$(
+  export VALIDATE_TMP="$TMP/v-fow" MARKETPLACE_PATH="$f" BASE_REF=HEAD WARN_INVARIANTS="I1" FAIL_ON_WARNINGS=true
+  rm -rf "$VALIDATE_TMP"; mkdir -p "$VALIDATE_TMP"
+  cp "$f" "$VALIDATE_TMP/marketplace.json"
+  bash scripts/11-validate-invariants.sh 2>&1
+)"
+fow_exit=$?
+set -e
+if [[ "$fow_exit" -ne 0 ]] && grep -q '::warning .*invariant I1:' <<<"$fow_out"; then
+  echo "  PASS FAIL_ON_WARNINGS turns demoted warning into failure exit"
+else
+  echo "  FAIL FAIL_ON_WARNINGS — exit=$fow_exit, output:"
+  sed 's/^/    /' <<<"$fow_out"
+  failures=$((failures+1))
+fi
+
 echo
 echo "=== $((total-failures))/$total passed ==="
 [[ "$failures" -eq 0 ]]
