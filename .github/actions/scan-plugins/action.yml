@@ -30,8 +30,11 @@ inputs:
     description: Space-separated allowlist of git hosts to clone from (SSRF guard).
     default: "github.com gitlab.com bitbucket.org"
   claude-cli-version:
-    description: Version of @anthropic-ai/claude-code to install
-    default: latest
+    description: >
+      Version of @anthropic-ai/claude-code to install. Pinned (not "latest")
+      because scan.sh relies on the --restricted and --strict-mcp-config
+      isolation flags, which exist from this version on.
+    default: "2.1.278"
   npm-registry:
     description: Optional npm registry URL for tooling installs
     default: ""
@@ -48,7 +51,7 @@ outputs:
     value: ${{ steps.scan.outputs.failed }}
   result:
     description: pass | fail | skipped
-    value: ${{ steps.scan.outputs.result }}
+    value: ${{ steps.scan.outputs.result || steps.skip.outputs.result }}
 
 runs:
   using: composite
@@ -62,6 +65,7 @@ runs:
         chmod +x "${{ github.action_path }}/scripts/"*.sh
 
     - name: Skip if no API key
+      id: skip
       if: inputs.anthropic-api-key == ''
       shell: bash
       run: |
@@ -75,7 +79,7 @@ runs:
 
     - name: Install Node
       if: inputs.anthropic-api-key != ''
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
       with:
         node-version: "20"
 
