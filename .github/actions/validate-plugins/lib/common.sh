@@ -47,6 +47,13 @@ has_unsafe_chars() {
   return 1
 }
 
+# Flatten CR/LF and cap length so contributor- or model-authored text cannot
+# start a new ::workflow-command line when interpolated into an annotation.
+annot_text() {
+  local s="${1//$'\r'/ }"; s="${s//$'\n'/ }"
+  printf '%s' "${s:0:${2:-500}}"
+}
+
 assert_safe_string() {
   local label="$1" value="$2"
   if has_unsafe_chars "$value"; then
@@ -86,6 +93,14 @@ assert_safe_sha() {
   local sha="$1"
   if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
     die "sha is not a 40-char lowercase hex string: $sha"
+  fi
+}
+
+# Ref must be a SHA, branch, tag or rev expression that cannot parse as a git option.
+assert_safe_ref() {
+  local r="$1"
+  if [[ ! "$r" =~ ^[A-Za-z0-9][A-Za-z0-9._/~^-]*$ ]]; then
+    die "base-ref is not a safe git ref: $r"
   fi
 }
 

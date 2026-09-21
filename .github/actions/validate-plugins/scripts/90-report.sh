@@ -10,14 +10,18 @@ RESULTS="$VALIDATE_TMP/results.jsonl"
 
 [[ -f "$RESULTS" ]] || touch "$RESULTS"
 
-any_fail="$(jq -s 'map(select(.status=="fail")) | length' -- "$RESULTS" 2>/dev/null || echo 0)"
+if ! any_fail="$(jq -s 'map(select(.status=="fail")) | length' -- "$RESULTS" 2>&1)" || [[ ! "$any_fail" =~ ^[0-9]+$ ]]; then
+  error "report: could not parse $RESULTS ($any_fail)"
+  any_fail=1
+fi
 
 {
   echo "## Plugin validation report"
   echo
   echo "| Step | Subject | Status | Detail |"
   echo "|---|---|---|---|"
-  jq -r '"| \(.step) | \(.subject) | \(.status) | \((.detail // "") | gsub("\n"; "<br>") | .[0:200]) |"' -- "$RESULTS"
+  jq -r '"| \(.step) | \(.subject) | \(.status) | \((.detail // "") | gsub("\n"; "<br>") | .[0:200]) |"' -- "$RESULTS" 2>/dev/null \
+    || echo "| report | results.jsonl | fail | could not parse results file |"
   echo
   if [[ "$any_fail" -gt 0 ]]; then
     echo "**Result: FAIL** ($any_fail failure(s))"

@@ -122,10 +122,11 @@ EOF
 ) >/dev/null 2>&1
 
 i7_run() {
+  local base="${1:-HEAD~1}"
   ( cd "$i7_repo"
     export VALIDATE_TMP="$TMP/v-i7" \
            MARKETPLACE_PATH=".claude-plugin/marketplace.json" \
-           BASE_REF="HEAD~1" \
+           BASE_REF="$base" \
            WARN_INVARIANTS="" \
            ENTRIES_DIR="plugins"
     rm -rf "$VALIDATE_TMP"; mkdir -p "$VALIDATE_TMP"
@@ -138,6 +139,15 @@ if i7_run | grep -q "invariant I7:"; then
   echo "  PASS I7 direct MP edit — I7 fires"
 else
   echo "  FAIL I7 direct MP edit — expected I7 to fire"
+  failures=$((failures+1))
+fi
+
+# I7 must fail closed: an undiffable BASE_REF is an I7 error, not a silent pass.
+total=$((total+1))
+if i7_run "0000000000000000000000000000000000000000" | grep -q "invariant I7: cannot diff"; then
+  echo "  PASS I7 undiffable BASE_REF — I7 fires (fail closed)"
+else
+  echo "  FAIL I7 undiffable BASE_REF — expected I7 to fire"
   failures=$((failures+1))
 fi
 
@@ -166,6 +176,42 @@ f=$(mk i9_path <<'EOF'
 {"plugins":[{"name":"abc","description":"ten chars ok","source":{"source":"git-subdir","url":"https://github.com/x/y","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path":"sub;rm"}}]}
 EOF
 ); assert_fires "I9 metachar in source.path" I9 "$f"
+
+# I9: traversal / absolute paths in object source.path and vendored source.
+f=$(mk i9_traversal <<'EOF'
+{"plugins":[{"name":"abc","description":"ten chars ok","source":{"source":"git-subdir","url":"https://github.com/x/y","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path":"../x"}}]}
+EOF
+); assert_fires "I9 traversal in source.path" I9 "$f"
+
+f=$(mk i9_abs <<'EOF'
+{"plugins":[{"name":"abc","description":"ten chars ok","source":{"source":"git-subdir","url":"https://github.com/x/y","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path":"/etc"}}]}
+EOF
+); assert_fires "I9 absolute source.path" I9 "$f"
+
+f=$(mk i9_vendored_abs <<'EOF'
+{"plugins":[{"name":"abc","description":"ten chars ok","source":"/etc/passwd"}]}
+EOF
+); assert_fires "I9 absolute vendored source" I9 "$f"
+
+# False-positive guard: a dotted (but not '..') relative path is fine.
+f=$(mk i9_dotted <<'EOF'
+{"plugins":[{"name":"aaa","description":"A valid description here.","source":{"source":"git-subdir","url":"https://github.com/x/y","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path":"packages/foo.bar"}}]}
+EOF
+); assert_clean "I9 dotted path is not traversal" "$f"
+
+# Annotation injection: a newline inside a source field must fire I9 AND must
+# not be able to start a forged ::error line of its own.
+f=$(mk i9_newline <<'EOF'
+{"plugins":[{"name":"abc","description":"ten chars ok","source":{"source":"git-subdir","url":"https://github.com/x/y","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path":"a\n::error::forged"}}]}
+EOF
+); assert_fires "I9 newline in path" I9 "$f"
+total=$((total+1))
+if run_invariants "$f" | grep -q '^::error::forged'; then
+  echo "  FAIL I9 newline in path — forged annotation line reached output"
+  failures=$((failures+1))
+else
+  echo "  PASS I9 newline in path — no forged annotation line"
+fi
 
 # Warning mode: when a code is in WARN_INVARIANTS, the script emits a warning
 # (not an error) and exits 0. Validate I1 demoted to warning does NOT fail.

@@ -10,7 +10,7 @@
 # I6  per-file mode: filename matches .name
 # I7  per-file mode: PR does not edit assembled marketplace.json directly
 # I8  vendored source path exists and contains .claude-plugin/plugin.json
-# I9  url/path/sha contain no shell metacharacters
+# I9  url/path/sha contain no shell metacharacters; path is relative and has no '..'
 # I10 name/description contain no hidden-Unicode (zero-width / bidi controls)
 # I11 name matches ^[a-z0-9][a-z0-9-]{1,63}$
 
@@ -26,11 +26,12 @@ warnings=0
 entry_line() {
   local name="$1"
   [[ -n "$name" ]] || return 0
-  grep -n "\"name\": \"$name\"" -- "$MARKETPLACE_PATH" 2>/dev/null | head -1 | cut -d: -f1 || true
+  grep -nF -e "\"name\": \"$name\"" -- "$MARKETPLACE_PATH" 2>/dev/null | head -1 | cut -d: -f1 || true
 }
 
 flag() {
   local code="$1" msg="$2" name="${3:-}"
+  msg="$(annot_text "$msg")"
   local line; line="$(entry_line "$name")"
   local loc="file=$MARKETPLACE_PATH${line:+,line=$line}"
   if [[ "$WARN_INVARIANTS" == *" $code "* ]]; then
@@ -93,24 +94,34 @@ while IFS= read -r entry; do
     flag "I5" "$name: source.sha is missing or not a 40-char hex SHA" "$name"
   fi
 
+  sp="$(jq -r '.source.path // empty' <<<"$entry")"
+  if [[ -n "$sp" ]] && { [[ "$sp" == /* ]] || [[ "$sp" == *".."* ]]; }; then
+    flag "I9" "$name: source.path is absolute or contains '..': $sp" "$name"
+  fi
+
   # I9: every string-valued field under .source must be free of shell metacharacters.
-  while IFS= read -r v; do
+  # NUL-delimited so an embedded newline stays inside one value instead of
+  # splitting into two lines that each look clean.
+  while IFS= read -r -d '' v; do
     [[ -z "$v" ]] && continue
     if has_unsafe_chars "$v"; then
       flag "I9" "$name: source field contains shell metacharacters: $v" "$name"
     fi
-  done < <(jq -r '.source | to_entries[] | select(.value|type=="string") | .value' <<<"$entry")
+  done < <(jq -j '.source | to_entries[] | select(.value|type=="string") | .value + "\u0000"' <<<"$entry")
 done < <(jq -c '.plugins[] | select(.source | type == "object")' -- "$MP")
 
 # I6 / I7 — per-file mode only
 if [[ -n "${ENTRIES_DIR:-}" ]]; then
+  assert_safe_ref "$BASE_REF"
   for f in "$ENTRIES_DIR"/*.json; do
     [[ -f "$f" ]] || continue
     base="$(basename "$f" .json)"
     inner="$(jq -r '.name' -- "$f")"
     [[ "$base" == "$inner" ]] || flag "I6" "$f: filename '$base' != .name '$inner'" "$inner"
   done
-  if git diff --name-only "$BASE_REF"...HEAD 2>/dev/null | grep -qxF -- "$MARKETPLACE_PATH"; then
+  if ! i7_diff="$(git diff --name-only "$BASE_REF"...HEAD -- 2>&1)"; then
+    flag "I7" "cannot diff against '$BASE_REF' ($i7_diff); unable to verify $MARKETPLACE_PATH was not edited directly"
+  elif grep -qxF -- "$MARKETPLACE_PATH" <<<"$i7_diff"; then
     flag "I7" "PR edits $MARKETPLACE_PATH directly; per-file repos must edit $ENTRIES_DIR/*.json only"
   fi
 fi
@@ -119,8 +130,8 @@ fi
 while IFS= read -r entry; do
   name="$(jq -r '.name' <<<"$entry")"
   p="$(jq -r '.source' <<<"$entry")"
-  if has_unsafe_chars "$p" || [[ "$p" == *".."* ]]; then
-    flag "I9" "$name: vendored source path contains unsafe characters: $p" "$name"
+  if has_unsafe_chars "$p" || [[ "$p" == *".."* ]] || [[ "$p" == /* ]]; then
+    flag "I9" "$name: vendored source path is absolute or contains unsafe characters: $p" "$name"
     continue
   fi
   p_clean="${p#./}"

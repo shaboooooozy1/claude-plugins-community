@@ -68,8 +68,11 @@ README.md
 
 The three actions are designed as a system (gate → policy → maintenance)
 and share `validate-plugins/lib/common.sh` for safety helpers
-(`has_unsafe_chars`, `assert_safe_string`, `assert_safe_url`,
-`assert_safe_sha`, `assert_safe_path`, `cli_validate`).
+(`has_unsafe_chars`, `annot_text`, `assert_safe_string`, `assert_safe_url`,
+`assert_safe_sha`, `assert_safe_path`, `assert_safe_ref`, `cli_validate`).
+`annot_text` flattens CR/LF and caps length on any contributor- or
+model-authored text before it is interpolated into a `::workflow-command`
+annotation; `assert_safe_ref` anchors `BASE_REF` before it reaches git.
 `assert_safe_string` is the shared predicate that `assert_safe_url` and
 `assert_safe_path` delegate to; `has_unsafe_chars` is its underlying
 character check (rejects shell metacharacters plus whitespace, including
@@ -172,7 +175,7 @@ must stay green.
 | Script | Covers | Run when you touch |
 |---|---|---|
 | `test-invariants.sh` | I1–I11 against synthetic `marketplace.json` fixtures; plus a real-git fixture for I7 (per-file mode, `BASE_REF=HEAD~1`); plus boundary/false-positive guards and `WARN_INVARIANTS` demotion behaviour | `scripts/11-validate-invariants.sh` |
-| `test-common.sh` | The `lib/common.sh` security predicates directly: `has_unsafe_chars`, `assert_safe_sha`, `assert_safe_path`, `assert_safe_url` (allowlist match, lookalike-host rejection, SSRF guards) | `lib/common.sh` |
+| `test-common.sh` | The `lib/common.sh` security predicates directly: `has_unsafe_chars`, `annot_text`, `assert_safe_sha`, `assert_safe_path`, `assert_safe_ref`, `assert_safe_url` (allowlist match, lookalike-host rejection, SSRF guards) | `lib/common.sh` |
 
 Adding a new invariant means adding at least one fixture that exercises
 it (a positive case) plus a false-positive guard for any boundary it

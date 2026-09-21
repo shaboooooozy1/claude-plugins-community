@@ -52,6 +52,20 @@ assert_returns_0       "rejects single quote"  has_unsafe_chars "a'b"
 assert_returns_0       "rejects double quote"  has_unsafe_chars 'a"b'
 assert_returns_0       "rejects backslash"     has_unsafe_chars 'a\b'
 
+# ---- annot_text ------------------------------------------------------------
+echo "-- annot_text"
+total=$((total+1))
+if [[ "$(annot_text $'a\r\nb::error::x')" == "a  b::error::x" ]]; then
+  pass "flattens CR/LF"
+else fail "flattens CR/LF" "got: $(annot_text $'a\r\nb::error::x')"; fi
+total=$((total+1))
+long="$(printf 'x%.0s' $(seq 1 600))"
+capped="$(annot_text "$long")"
+if [[ "${#capped}" -eq 500 ]]; then pass "caps at 500 by default"; else fail "caps at 500 by default" "len=${#capped}"; fi
+total=$((total+1))
+capped="$(annot_text "$long" 42)"
+if [[ "${#capped}" -eq 42 ]]; then pass "caps at explicit length"; else fail "caps at explicit length" "len=${#capped}"; fi
+
 # ---- assert_safe_sha -------------------------------------------------------
 echo "-- assert_safe_sha"
 assert_returns_0       "valid 40-hex lowercase"  assert_safe_sha "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -72,6 +86,18 @@ assert_returns_nonzero "embedded traversal"      assert_safe_path "a/../b"
 assert_returns_nonzero "metacharacter in path"   assert_safe_path 'a;rm/b'
 assert_returns_nonzero "whitespace in path"      assert_safe_path 'a b'
 assert_returns_nonzero "newline in path"         assert_safe_path $'a\nb'
+
+# ---- assert_safe_ref -------------------------------------------------------
+echo "-- assert_safe_ref"
+assert_returns_0       "remote branch"           assert_safe_ref "origin/main"
+assert_returns_0       "HEAD"                    assert_safe_ref "HEAD"
+assert_returns_0       "rev expression"          assert_safe_ref "HEAD~1"
+assert_returns_0       "40-hex sha"              assert_safe_ref "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+assert_returns_nonzero "long option"             assert_safe_ref "--upload-pack=x"
+assert_returns_nonzero "short option"            assert_safe_ref "-x"
+assert_returns_nonzero "whitespace"              assert_safe_ref "a b"
+assert_returns_nonzero "empty"                   assert_safe_ref ""
+assert_returns_nonzero "metacharacter"           assert_safe_ref 'main;rm'
 
 # ---- assert_safe_url -------------------------------------------------------
 echo "-- assert_safe_url"

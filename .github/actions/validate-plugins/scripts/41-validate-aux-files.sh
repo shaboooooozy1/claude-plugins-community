@@ -27,6 +27,12 @@ while IFS= read -r folder; do
   for aux in "${AUX_FILES[@]}"; do
     f="$folder/$aux"
     [[ -f "$f" ]] || continue
+    if [[ -L "$f" ]]; then
+      error "$f: is a symlink"
+      record_result "aux-files" "fail" "$f" "symlink"
+      failures=$((failures+1))
+      continue
+    fi
     if err="$(jq -e 'type' -- "$f" 2>&1 >/dev/null)"; then
       log "  ✓ $f parses"
       record_result "aux-files" "pass" "$f" ""

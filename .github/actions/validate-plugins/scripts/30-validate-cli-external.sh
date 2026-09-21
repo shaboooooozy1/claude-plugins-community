@@ -118,6 +118,13 @@ while IFS= read -r ext; do
     fi
   fi
 
+  if [[ -L "$manifest" ]] || [[ "$(realpath -- "$manifest")" != "$(realpath -- "$dest")"/* ]]; then
+    error "$name: plugin manifest is a symlink or resolves outside the clone — $ref"
+    record_result "cli-external" "fail" "$name" "manifest symlink/outside clone — $ref"
+    failures=$((failures+1))
+    continue
+  fi
+
   if out="$(timeout "$TIMEOUT_SECS" claude plugin validate "$manifest" 2>&1)"; then
     log "  ✓ $name OK — $ref"
     record_result "cli-external" "pass" "$name" ""
