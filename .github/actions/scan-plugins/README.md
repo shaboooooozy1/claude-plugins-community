@@ -5,8 +5,9 @@ Companion to [`validate-plugins`](../validate-plugins/) and
 [`bump-plugin-shas`](../bump-plugin-shas/).
 
 **Non-blocking by default.** Findings surface as `::warning` annotations and a
-step-summary table. Set `fail-on-findings: true` to make policy failures fail
-the job.
+step-summary table. Set `fail-on-findings: true` to make the job fail whenever
+the scan did not come back clean, which covers both a policy failure and a
+target that could not be scanned.
 
 **Bot-free.** Needs only an `ANTHROPIC_API_KEY` secret (org or repo level). If
 the secret is unset, the action skips gracefully — so you can add the workflow
@@ -89,7 +90,7 @@ secrets, so the scan is a no-op (`result: skipped`) there.
 | `anthropic-api-key` | `""` | if empty, the scan is skipped (graceful no-op) |
 | `marketplace-path` | `.claude-plugin/marketplace.json` | |
 | `base-ref` | PR base / push `before` / `origin/main` | |
-| `fail-on-findings` | `false` | if true, `passes:false` fails the job |
+| `fail-on-findings` | `false` | if true, the job fails unless the scan came back clean: any `passes:false` **or** any unscanned target |
 | `scan-all-external` | `false` | nightly full-sweep mode |
 | `policy-prompt` | bundled `policy/prompt.md` | override with a repo-local file |
 | `allowed-hosts` | `github.com gitlab.com bitbucket.org` | SSRF allowlist |

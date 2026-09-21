@@ -227,7 +227,11 @@ fi
 # unscanned target must not be reported as `pass`: consumers gate on it.
 if [[ "$fcount" -gt 0 || "$scount" -gt 0 ]]; then
   echo "result=fail" >> "${GITHUB_OUTPUT:-/dev/stdout}"
-  [[ "$fcount" -gt 0 && "${FAIL_ON_FINDINGS:-false}" == "true" ]] && exit 1
+  # FAIL_ON_FINDINGS means "block unless the scan came back clean". An
+  # unscanned target is not a clean one, so it blocks on the same input:
+  # a consumer who asked to fail closed must not pass on a target the
+  # scanner never reached.
+  [[ "${FAIL_ON_FINDINGS:-false}" == "true" ]] && exit 1
   exit 0
 fi
 echo "result=pass" >> "${GITHUB_OUTPUT:-/dev/stdout}"

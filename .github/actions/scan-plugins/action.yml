@@ -3,9 +3,9 @@ description: >
   Claude-based policy/safety scan of changed external marketplace entries.
   Clones each changed entry at its pinned SHA, runs Claude headless against
   policy/prompt.md, and reports verdicts as inline annotations and a step
-  summary. Non-blocking by default (warnings); set fail-on-findings to make
-  policy violations fail the job. Bot-free: needs only an ANTHROPIC_API_KEY
-  secret.
+  summary. Non-blocking by default (warnings); set fail-on-findings to make a
+  scan that did not come back clean fail the job. Bot-free: needs only an
+  ANTHROPIC_API_KEY secret.
 
 inputs:
   anthropic-api-key:
@@ -18,7 +18,10 @@ inputs:
     description: Git ref to diff against for change detection
     default: ${{ github.event.pull_request.base.sha || github.event.before || 'origin/main' }}
   fail-on-findings:
-    description: If true, a `passes:false` verdict fails the job. Default false (annotate-only).
+    description: >
+      If true, the job fails unless the scan came back clean: any `passes:false`
+      verdict OR any target that could not be scanned. Default false
+      (annotate-only).
     default: "false"
   scan-all-external:
     description: Scan EVERY external entry, not just changed ones. For nightly full sweeps.
