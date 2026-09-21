@@ -45,12 +45,18 @@ inputs:
 outputs:
   scanned:
     description: JSON array of {name, passes, summary, violations, may_make_external_network_calls, may_download_additional_software}
-    value: ${{ steps.scan.outputs.scanned }}
+    value: ${{ steps.scan.outputs.scanned || steps.skip.outputs.scanned }}
   failed:
     description: JSON array of plugin names that failed policy
-    value: ${{ steps.scan.outputs.failed }}
+    value: ${{ steps.scan.outputs.failed || steps.skip.outputs.failed }}
+  skipped:
+    description: JSON array of {name, reason} for targets that could not be scanned
+    value: ${{ steps.scan.outputs.skipped || steps.skip.outputs.skipped }}
   result:
-    description: pass | fail | skipped
+    description: >
+      pass | fail | skipped. `pass` means every target was scanned and passed;
+      a policy failure or an unscanned target reports `fail` even when the job
+      itself is non-blocking, so gating on `result == 'pass'` fails closed.
     value: ${{ steps.scan.outputs.result || steps.skip.outputs.result }}
 
 runs:
@@ -70,6 +76,11 @@ runs:
       shell: bash
       run: |
         echo "::notice::scan-plugins: ANTHROPIC_API_KEY not set; skipping policy scan."
+        # The array outputs keep their documented JSON shape so a consumer that
+        # always parses them with fromJSON does not break on the no-key path.
+        echo "scanned=[]" >> "$GITHUB_OUTPUT"
+        echo "failed=[]" >> "$GITHUB_OUTPUT"
+        echo "skipped=[]" >> "$GITHUB_OUTPUT"
         echo "result=skipped" >> "$GITHUB_OUTPUT"
 
     - name: Install jq

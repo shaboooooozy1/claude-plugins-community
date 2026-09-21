@@ -8,8 +8,11 @@ set -euo pipefail
 
 log()   { printf '%s\n' "$*"; }
 info()  { printf '::notice::%s\n' "$*"; }
-warn()  { printf '::warning::%s\n' "$*"; }
-error() { printf '::error::%s\n' "$*"; }
+# Every annotation goes through annot_text: contributor- and model-derived text
+# reaches these sinks (plugin names, refs, validator output), and an embedded
+# newline would otherwise start a forged ::error:: / ::warning:: command.
+warn()  { printf '::warning::%s\n' "$(annot_text "$*")"; }
+error() { printf '::error::%s\n' "$(annot_text "$*")"; }
 die()   { error "$*"; record_result "fatal" "fail" "die" "$*"; exit 1; }
 
 group_start() { printf '::group::%s\n' "$*"; }

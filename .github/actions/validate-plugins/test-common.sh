@@ -66,6 +66,22 @@ total=$((total+1))
 capped="$(annot_text "$long" 42)"
 if [[ "${#capped}" -eq 42 ]]; then pass "caps at explicit length"; else fail "caps at explicit length" "len=${#capped}"; fi
 
+# ---- annotation sinks ------------------------------------------------------
+# warn/error sanitise their own message: every caller (die, assert_safe_ref's
+# rejection, bump.sh's skip) passes contributor-derived text, and an embedded
+# newline would otherwise open a forged workflow command on the next line.
+echo "-- warn/error sinks"
+total=$((total+1))
+sink_out="$(warn "$(printf 'bad\n::error::forged')" 2>&1)"
+if [[ "$sink_out" == '::warning::bad ::error::forged' ]]; then
+  pass "warn() flattens newlines"
+else fail "warn() flattens newlines" "got: $sink_out"; fi
+total=$((total+1))
+sink_out="$(error "$(printf 'x\r\n::error::forged')" 2>&1)"
+if [[ "$sink_out" == '::error::x  ::error::forged' ]]; then
+  pass "error() flattens CR/LF"
+else fail "error() flattens CR/LF" "got: $sink_out"; fi
+
 # ---- assert_safe_sha -------------------------------------------------------
 echo "-- assert_safe_sha"
 assert_returns_0       "valid 40-hex lowercase"  assert_safe_sha "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

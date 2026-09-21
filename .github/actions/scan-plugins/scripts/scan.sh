@@ -51,6 +51,7 @@ if [[ "$count" -eq 0 ]]; then
   log "No external entries to scan."
   echo "scanned=[]" >> "${GITHUB_OUTPUT:-/dev/stdout}"
   echo "failed=[]" >> "${GITHUB_OUTPUT:-/dev/stdout}"
+  echo "skipped=[]" >> "${GITHUB_OUTPUT:-/dev/stdout}"
   echo "result=pass" >> "${GITHUB_OUTPUT:-/dev/stdout}"
   exit 0
 fi
@@ -59,7 +60,21 @@ fi
 
 scanned='[]'
 failed='[]'
+skipped='[]'
 idx=0
+
+# A target we could not scan is never silently treated as clean: it lands in
+# the `skipped` output and forces a non-pass result, so a consumer gating on
+# result == 'pass' fails closed.
+skip_target() {
+  local name="$1" reason="$2" loc="${3:-}"
+  skipped="$(jq -c --arg n "$name" --arg r "$reason" '. + [{name:$n, reason:$r}]' <<<"$skipped")"
+  if [[ -n "$loc" ]]; then
+    printf '::warning %s::scan-plugins: %s not scanned (%s)\n' "$loc" "$(annot_text "$name" 100)" "$(annot_text "$reason" 200)"
+  else
+    printf '::warning::scan-plugins: %s not scanned (%s)\n' "$(annot_text "$name" 100)" "$(annot_text "$reason" 200)"
+  fi
+}
 
 entry_line() {
   grep -nF -e "\"name\": \"$1\"" -- "$MARKETPLACE_PATH" 2>/dev/null | head -1 | cut -d: -f1 || true
@@ -71,7 +86,7 @@ while IFS= read -r ext; do
   # scan-plugins runs standalone and never sees I11, so the name must be
   # re-checked here before it reaches any annotation or log line.
   if [[ ! "$name" =~ ^[a-z0-9][a-z0-9-]{1,63}$ ]]; then
-    printf '::warning::scan-plugins: target %d has an invalid name; skipping\n' "$idx"; continue
+    skip_target "target $idx" "invalid name"; continue
   fi
   url="$(jq -r '.source.url // .source.repo // empty' <<<"$ext")"
   sha="$(jq -r '.source.sha // empty' <<<"$ext")"
@@ -82,28 +97,28 @@ while IFS= read -r ext; do
   group_start "Scan: $name"
 
   if [[ -z "$url" || -z "$sha" ]]; then
-    printf '::warning %s::scan-plugins: %s has no url or sha; skipping\n' "$loc" "$name"
+    skip_target "$name" "no url or sha" "$loc"
     group_end; continue
   fi
   if [[ "$url" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
     url="https://github.com/$url"
   fi
   if has_unsafe_chars "$url" || [[ ! "$url" =~ ^https://[A-Za-z0-9./_-]+$ ]]; then
-    printf '::warning %s::scan-plugins: %s url unsafe; skipping\n' "$loc" "$name"
+    skip_target "$name" "url unsafe" "$loc"
     group_end; continue
   fi
   host="${url#https://}"; host="${host%%/*}"
   ok=""; for h in $ALLOWED_HOSTS; do [[ "$host" == "$h" || "$host" == *".$h" ]] && { ok=1; break; }; done
   if [[ -z "$ok" ]]; then
-    printf '::warning %s::scan-plugins: %s host not in allowlist; skipping\n' "$loc" "$name"
+    skip_target "$name" "host not in allowlist" "$loc"
     group_end; continue
   fi
   if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
-    printf '::warning %s::scan-plugins: %s sha malformed; skipping\n' "$loc" "$name"
+    skip_target "$name" "sha malformed" "$loc"
     group_end; continue
   fi
   if [[ -n "$subdir" ]] && { has_unsafe_chars "$subdir" || [[ "$subdir" == *".."* ]]; }; then
-    printf '::warning %s::scan-plugins: %s subdir unsafe; skipping\n' "$loc" "$name"
+    skip_target "$name" "subdir unsafe" "$loc"
     group_end; continue
   fi
 
@@ -112,12 +127,12 @@ while IFS= read -r ext; do
   if ! timeout 120 git clone --quiet --depth 1 -- "$url" "$dest" 2>&1 \
      || ! git -C "$dest" fetch --quiet --depth 1 origin -- "$sha" 2>&1 \
      || ! git -C "$dest" -c advice.detachedHead=false checkout --quiet "$sha" -- 2>&1; then
-    printf '::warning %s::scan-plugins: %s clone/fetch/checkout failed; skipping\n' "$loc" "$name"
+    skip_target "$name" "clone/fetch/checkout failed" "$loc"
     rm -rf -- "$dest"; group_end; continue
   fi
   target="$dest${subdir:+/$subdir}"
   if [[ ! -d "$target" ]]; then
-    printf '::warning %s::scan-plugins: %s subdir not found at sha; skipping\n' "$loc" "$name"
+    skip_target "$name" "subdir not found at sha" "$loc"
     rm -rf -- "$dest"; group_end; continue
   fi
 
@@ -143,7 +158,7 @@ while IFS= read -r ext; do
   # .result is the text result. Only `passes` is gated.
   verdict="$(jq -c '.structured_output // empty' <<<"$raw" 2>/dev/null || true)"
   if [[ -z "$verdict" ]] || ! jq -e 'has("passes")' <<<"$verdict" >/dev/null 2>&1; then
-    printf '::warning %s::scan-plugins: %s — could not parse verdict; raw output in step log\n' "$loc" "$name"
+    skip_target "$name" "could not parse verdict; raw output in step log" "$loc"
     log "$(annot_text "$raw" 2000)"
     rm -rf -- "$dest"; group_end; continue
   fi
@@ -175,10 +190,11 @@ done < <(jq -c '.[]' -- "$workroot/targets.json")
 # ---- summary --------------------------------------------------------------
 
 fcount="$(jq 'length' <<<"$failed")"
+scount="$(jq 'length' <<<"$skipped")"
 {
   echo "## Policy scan"
   echo
-  echo "Scanned $(jq 'length' <<<"$scanned") plugin(s). Policy failures: $fcount."
+  echo "Scanned $(jq 'length' <<<"$scanned") plugin(s). Policy failures: $fcount. Not scanned: $scount."
   echo
   if [[ "$(jq 'length' <<<"$scanned")" -gt 0 ]]; then
     echo "| Plugin | Passes | Net calls | Installs sw | Summary |"
@@ -192,13 +208,26 @@ fcount="$(jq 'length' <<<"$failed")"
   fi
 } >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 
+if [[ "$scount" -gt 0 ]]; then
+  {
+    echo
+    echo "### Not scanned"
+    jq -r '.[] | "- **\(.name | gsub("[\\r\\n|]"; " "))** — \(.reason | gsub("[\\r\\n|]"; " "))"' <<<"$skipped"
+  } >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+fi
+
 {
   echo "scanned=$scanned"
   echo "failed=$failed"
+  echo "skipped=$skipped"
 } >> "${GITHUB_OUTPUT:-/dev/stdout}"
 
-if [[ "$fcount" -gt 0 && "${FAIL_ON_FINDINGS:-false}" == "true" ]]; then
+# `result` reports the scan outcome; FAIL_ON_FINDINGS still decides whether the
+# job itself fails, so the default stays non-blocking. A policy failure or an
+# unscanned target must not be reported as `pass`: consumers gate on it.
+if [[ "$fcount" -gt 0 || "$scount" -gt 0 ]]; then
   echo "result=fail" >> "${GITHUB_OUTPUT:-/dev/stdout}"
-  exit 1
+  [[ "$fcount" -gt 0 && "${FAIL_ON_FINDINGS:-false}" == "true" ]] && exit 1
+  exit 0
 fi
 echo "result=pass" >> "${GITHUB_OUTPUT:-/dev/stdout}"

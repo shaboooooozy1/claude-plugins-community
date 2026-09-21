@@ -103,11 +103,20 @@ secrets, so the scan is a no-op (`result: skipped`) there.
 |---|---|
 | `scanned` | JSON array of full verdicts `{name, passes, summary, violations, may_make_external_network_calls, may_download_additional_software}` |
 | `failed` | JSON array of plugin names with `passes:false` |
+| `skipped` | JSON array of `{name, reason}` for targets that could not be scanned (unpinned entry, host not allowlisted, clone failure, unparseable verdict, …) |
 | `result` | `pass` / `fail` / `skipped` |
 
+All three arrays are always valid JSON, including on the no-key path, so a
+consumer may `fromJSON` them unconditionally.
+
 `result` is `skipped` whenever `anthropic-api-key` is empty (for example on
-`pull_request` runs from forks, which receive no secrets). Consumers wanting a
-hard gate must test `== 'pass'` (fail-closed), not `!= 'fail'`.
+`pull_request` runs from forks, which receive no secrets). It is `pass` only
+when every target was scanned and passed: a policy failure or an unscanned
+target reports `fail` even though the job itself stays green unless
+`fail-on-findings` is set. That split keeps the default non-blocking while
+letting a consumer gate on `== 'pass'` (fail-closed) rather than `!= 'fail'`,
+and it means a target the scanner could not reach is never mistaken for a
+clean one.
 
 ## Isolation note
 
