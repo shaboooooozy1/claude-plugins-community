@@ -87,7 +87,11 @@ while IFS= read -r ext; do
   # scan-plugins runs standalone and never sees I11, so the name must be
   # re-checked here before it reaches any annotation or log line.
   if [[ ! "$name" =~ ^[a-z0-9][a-z0-9-]{1,63}$ ]]; then
-    skip_target "target $idx" "invalid name"; continue
+    # Record the name, not the index: `skipped` documents {name, reason}, and a
+    # consumer has to map the skip back to an entry. skip_target flattens it
+    # for the annotation and jq --arg encodes it for the JSON, so an invalid
+    # name is safe to carry here.
+    skip_target "$name" "invalid name"; continue
   fi
   url="$(jq -r '.source.url // .source.repo // empty' <<<"$ext")"
   sha="$(jq -r '.source.sha // empty' <<<"$ext")"

@@ -199,6 +199,39 @@ f=$(mk i9_dotted <<'EOF'
 EOF
 ); assert_clean "I9 dotted path is not traversal" "$f"
 
+# A vendored source may be a symlink out of the checkout. The lexical checks
+# above cannot see that, and `-f` follows it, so containment is checked on the
+# resolved path. Needs a real workspace, so it runs in its own directory.
+run_in_workspace() {
+  local ws="$1" mp="$2"
+  ( cd "$ws" \
+    && VALIDATE_TMP="$ws/.v" MARKETPLACE_PATH="$mp" BASE_REF=HEAD WARN_INVARIANTS="" \
+       ENTRIES_DIR="" GITHUB_WORKSPACE="$ws" ACTION_PATH="$ACTION_PATH" \
+       bash -c 'rm -rf "$VALIDATE_TMP"; mkdir -p "$VALIDATE_TMP"
+                cp "$MARKETPLACE_PATH" "$VALIDATE_TMP/marketplace.json"
+                bash "$ACTION_PATH/scripts/11-validate-invariants.sh" 2>&1 || true' )
+}
+
+ws="$TMP/ws"; outside="$TMP/outside"
+mkdir -p "$ws" "$outside/.claude-plugin" "$ws/real-plugin/.claude-plugin"
+echo '{"name":"real-plugin"}' > "$ws/real-plugin/.claude-plugin/plugin.json"
+echo '{"name":"escaped"}'     > "$outside/.claude-plugin/plugin.json"
+ln -s "$outside" "$ws/escaped"
+cat > "$ws/mp-escape.json" <<'EOF'
+{"plugins":[{"name":"escaped","description":"ten chars ok","source":"./escaped"}]}
+EOF
+cat > "$ws/mp-real.json" <<'EOF'
+{"plugins":[{"name":"real-plugin","description":"ten chars ok","source":"./real-plugin"}]}
+EOF
+total=$((total+1))
+if run_in_workspace "$ws" "$ws/mp-escape.json" | grep -q "invariant I9:"; then
+  echo "  PASS I9 symlinked vendored source — I9 fires"
+else echo "  FAIL I9 symlinked vendored source — expected I9 to fire"; failures=$((failures+1)); fi
+total=$((total+1))
+if run_in_workspace "$ws" "$ws/mp-real.json" | grep -qE '::error|::warning'; then
+  echo "  FAIL I9 real vendored source stays clean — unexpected finding"; failures=$((failures+1))
+else echo "  PASS I9 real vendored source stays clean"; fi
+
 # Annotation injection: a newline inside a source field must fire I9 AND must
 # not be able to start a forged ::error line of its own.
 f=$(mk i9_newline <<'EOF'

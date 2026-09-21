@@ -127,6 +127,8 @@ if [[ -n "${ENTRIES_DIR:-}" ]]; then
 fi
 
 # I8 — vendored paths exist
+ws_phys="$(realpath -- "${GITHUB_WORKSPACE:-$PWD}" 2>/dev/null || true)"
+[[ -n "$ws_phys" ]] || die "cannot resolve workspace root"
 while IFS= read -r entry; do
   name="$(jq -r '.name' <<<"$entry")"
   p="$(jq -r '.source' <<<"$entry")"
@@ -135,8 +137,19 @@ while IFS= read -r entry; do
     continue
   fi
   p_clean="${p#./}"
-  if [[ ! -f "$p_clean/.claude-plugin/plugin.json" ]]; then
+  manifest="$p_clean/.claude-plugin/plugin.json"
+  if [[ ! -f "$manifest" ]]; then
     flag "I8" "$name: vendored source '$p' has no .claude-plugin/plugin.json" "$name"
+    continue
+  fi
+  # The checks above are lexical and `-f` follows symlinks, so a vendored
+  # source that is (or sits under) a symlink out of the checkout would satisfy
+  # I8 and then be read as a plugin. Require the resolved manifest to stay
+  # inside the workspace, as the cloned-manifest and aux-file checks do.
+  # I9 rather than I8: a path escape must block, and I8 is warn-by-default.
+  manifest_phys="$(realpath -- "$manifest" 2>/dev/null || true)"
+  if [[ -z "$manifest_phys" || "$manifest_phys" != "$ws_phys"/* ]]; then
+    flag "I9" "$name: vendored source '$p' resolves outside the workspace" "$name"
   fi
 done < <(jq -c '.plugins[] | select(.source | type == "string")' -- "$MP")
 
