@@ -67,19 +67,30 @@ README.md
 ```
 
 The three actions are designed as a system (gate → policy → maintenance)
-and share `validate-plugins/lib/common.sh` for safety helpers
-(`has_unsafe_chars`, `annot_text`, `assert_safe_string`, `assert_safe_url`,
-`assert_safe_sha`, `assert_safe_path`, `assert_safe_ref`, `cli_validate`).
-`annot_text` flattens CR/LF and caps length on any contributor- or
-model-authored text before it is interpolated into a `::workflow-command`
-annotation; `assert_safe_ref` anchors `BASE_REF` before it reaches git.
-`assert_safe_string` is the shared predicate that `assert_safe_url` and
-`assert_safe_path` delegate to; `has_unsafe_chars` is its underlying
-character check (rejects shell metacharacters plus whitespace, including
-newline and carriage return). `scan-plugins` and
-`bump-plugin-shas` source it via `$VALIDATE_LIB` (a relative path set
-in their action.yml setup steps). When touching one action, check
-whether the same change is needed in the others.
+and share `validate-plugins/lib/common.sh` for safety helpers.
+`scan-plugins` and `bump-plugin-shas` source it via `$VALIDATE_LIB` (a
+relative path set in their action.yml setup steps). When touching one
+action, check whether the same change is needed in the others — every
+duplicated predicate in this codebase has eventually drifted.
+
+| Helper | Shape | What it is for |
+|---|---|---|
+| `has_unsafe_chars` | 0 = unsafe | Character check: shell metacharacters plus whitespace, including newline and CR. The base of the other string predicates. |
+| `assert_safe_string` | dies | Wraps `has_unsafe_chars`. `assert_safe_path` delegates to it. |
+| `url_safe_or_reason` | **0 = safe**, reason on stdout | The one URL implementation: https only, safe charset, bare IP or port rejected regardless of `ALLOWED_HOSTS`, then the allowlist. Empty `ALLOWED_HOSTS` fails closed. |
+| `assert_safe_url` | dies | Asserting wrapper around `url_safe_or_reason`. |
+| `assert_safe_sha` / `assert_safe_path` / `assert_safe_ref` | die | 40-hex sha; relative path with no `..`; a git ref that cannot parse as an option. |
+| `annot_text` | echoes | Flattens CR/LF and caps length for text interpolated **into** a `::workflow-command` line. |
+| `log_untrusted` | prints | For plugin/model/CLI text printed **as** whole lines: indents every line so none can begin with `::`. |
+| `assert_helpers_defined` | exits 1 | Checks `REQUIRED_HELPERS`, every helper a security gate depends on. Both standalone actions call it after sourcing. |
+| `cli_validate` | 0/1 | Runs `claude plugin validate`, classifies pass/warn/fail, honours `FAIL_ON_WARNINGS`. |
+
+Note the polarity split. `has_unsafe_chars` returns 0 for *unsafe*, but
+`url_safe_or_reason` returns 0 for *safe*, deliberately: its callers gate on
+success, so a failure of the function itself (an older `common.sh` where it is
+undefined) must land on the reject side rather than being waved through. Add
+new URL rules to `url_safe_or_reason`, not to `assert_safe_url`, and add any
+new gate dependency to `REQUIRED_HELPERS`.
 
 | Action | Role | Permissions | Secret |
 |---|---|---|---|
@@ -175,7 +186,7 @@ must stay green.
 | Script | Covers | Run when you touch |
 |---|---|---|
 | `test-invariants.sh` | I1–I11 against synthetic `marketplace.json` fixtures; plus a real-git fixture for I7 (per-file mode, `BASE_REF=HEAD~1`); plus boundary/false-positive guards and `WARN_INVARIANTS` demotion behaviour | `scripts/11-validate-invariants.sh` |
-| `test-common.sh` | The `lib/common.sh` security predicates directly: `has_unsafe_chars`, `annot_text`, `assert_safe_sha`, `assert_safe_path`, `assert_safe_ref`, `assert_safe_url` (allowlist match, lookalike-host rejection, SSRF guards) | `lib/common.sh` |
+| `test-common.sh` | The `lib/common.sh` security predicates directly: `has_unsafe_chars`, `annot_text`, the `warn`/`error`/`log_untrusted` sinks, `assert_safe_sha`, `assert_safe_path`, `assert_safe_ref`, `assert_safe_url` and `url_safe_or_reason` (allowlist match, lookalike-host rejection, SSRF guards, bare IP rejected even when allowlisted, missing helper rejects), `assert_helpers_defined` | `lib/common.sh` |
 
 Adding a new invariant means adding at least one fixture that exercises
 it (a positive case) plus a false-positive guard for any boundary it

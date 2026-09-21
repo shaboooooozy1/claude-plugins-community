@@ -8,9 +8,17 @@ source "$ACTION_PATH/lib/common.sh"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 RESULTS="$VALIDATE_TMP/results.jsonl"
 
-[[ -f "$RESULTS" ]] || touch "$RESULTS"
-
-if ! any_fail="$(jq -s 'map(select(.status=="fail")) | length' -- "$RESULTS" 2>&1)" || [[ ! "$any_fail" =~ ^[0-9]+$ ]]; then
+# This step runs with `if: always()`, so it also runs when an upstream script
+# died before its first record_result and left no results file at all. jq -s
+# reports 0 failures for empty or absent input, which would otherwise announce
+# PASS for a run that validated nothing.
+no_results=""
+if [[ ! -s "$RESULTS" ]]; then
+  no_results=1
+  touch "$RESULTS"
+  error "report: no results recorded — an earlier step did not complete"
+  any_fail=1
+elif ! any_fail="$(jq -s 'map(select(.status=="fail")) | length' -- "$RESULTS" 2>&1)" || [[ ! "$any_fail" =~ ^[0-9]+$ ]]; then
   error "report: could not parse $RESULTS ($any_fail)"
   any_fail=1
 fi
@@ -29,7 +37,9 @@ fi
       -- "$RESULTS" 2>/dev/null \
     || echo "| report | results.jsonl | fail | could not parse results file |"
   echo
-  if [[ "$any_fail" -gt 0 ]]; then
+  if [[ -n "$no_results" ]]; then
+    echo "**Result: FAIL** — no validation results were recorded, so an earlier step did not complete"
+  elif [[ "$any_fail" -gt 0 ]]; then
     echo "**Result: FAIL** ($any_fail failure(s))"
   else
     echo "**Result: PASS**"
