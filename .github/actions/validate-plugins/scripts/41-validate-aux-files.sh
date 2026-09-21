@@ -61,7 +61,7 @@ while IFS= read -r folder; do
       record_result "aux-files" "pass" "$f" ""
     else
       error "$f: invalid JSON"
-      log "$err"
+      log_untrusted "$err"
       record_result "aux-files" "fail" "$f" "$err"
       failures=$((failures+1))
     fi

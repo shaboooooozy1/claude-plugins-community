@@ -8,6 +8,12 @@ set -euo pipefail
 
 log()   { printf '%s\n' "$*"; }
 info()  { printf '::notice::%s\n' "$*"; }
+# For text that came from a plugin, a model or a CLI. GitHub reads ANY line
+# starting with `::` as a workflow command, so flattening newlines is not
+# enough on its own: a value whose first line is `::error::...` would still
+# forge one. Indenting every line makes that structurally impossible while
+# keeping the output readable.
+log_untrusted() { printf '%s\n' "$*" | sed 's/^/  | /'; }
 # Every annotation goes through annot_text: contributor- and model-derived text
 # reaches these sinks (plugin names, refs, validator output), and an embedded
 # newline would otherwise start a forged ::error:: / ::warning:: command.
@@ -123,7 +129,7 @@ cli_validate() {
   local step="$1" subject="$2" path="$3"
   local out
   if out="$(claude plugin validate "$path" 2>&1)"; then
-    log "$out"
+    log_untrusted "$out"
     if grep -qE '^⚠|passed with warnings' <<<"$out"; then
       if [[ "${FAIL_ON_WARNINGS:-false}" == "true" ]]; then
         error "$subject: warnings (fail-on-warnings is set)"
@@ -138,7 +144,7 @@ cli_validate() {
     return 0
   fi
   error "$subject: claude plugin validate failed"
-  log "$out"
+  log_untrusted "$out"
   record_result "$step" "fail" "$subject" "$out"
   return 1
 }

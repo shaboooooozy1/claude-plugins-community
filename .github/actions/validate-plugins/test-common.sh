@@ -82,6 +82,19 @@ if [[ "$sink_out" == '::error::x  ::error::forged' ]]; then
   pass "error() flattens CR/LF"
 else fail "error() flattens CR/LF" "got: $sink_out"; fi
 
+# log_untrusted carries plugin/model/CLI output. Flattening newlines is not
+# enough for these: a value whose first line is `::error::...` would still be
+# read as a workflow command, so every line must be indented.
+total=$((total+1))
+sink_out="$(log_untrusted "$(printf '::error::forged\nsecond\n::set-output name=x::y')" 2>&1)"
+if ! grep -qE '^::' <<<"$sink_out"; then
+  pass "log_untrusted() cannot start a line with ::"
+else fail "log_untrusted() cannot start a line with ::" "got: $sink_out"; fi
+total=$((total+1))
+if [[ "$(log_untrusted "plain" 2>&1)" == '  | plain' ]]; then
+  pass "log_untrusted() keeps content readable"
+else fail "log_untrusted() keeps content readable" "got: $(log_untrusted "plain" 2>&1)"; fi
+
 # ---- assert_safe_sha -------------------------------------------------------
 echo "-- assert_safe_sha"
 assert_returns_0       "valid 40-hex lowercase"  assert_safe_sha "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

@@ -131,7 +131,7 @@ while IFS= read -r ext; do
   else
     detail="$(grep -E '❯|Error:' <<<"$out" | head -1 | sed -E 's/^[[:space:]]+//')"
     error "$name: claude plugin validate failed — $ref — ${detail:-see log}"
-    log "$out"
+    log_untrusted "$out"
     record_result "cli-external" "fail" "$name" "$out"
     failures=$((failures+1))
   fi

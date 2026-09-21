@@ -39,7 +39,9 @@ elif ! DIFF_FILES="$(git diff --name-only "$BASE_REF"...HEAD -- 2>&1)"; then
   DIFF_FILES=""
 fi
 log "Changed files:"
-log "$DIFF_FILES"
+# A pull request may add a path that begins with `::`, which GitHub would read
+# as a workflow command on its own line.
+log_untrusted "$DIFF_FILES"
 
 # ---- assemble / copy marketplace ------------------------------------------
 
