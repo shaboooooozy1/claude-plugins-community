@@ -2,7 +2,10 @@
 # Discover stale external SHAs, validate at new HEAD, open one PR with all
 # passing bumps. See action.yml for the design rationale.
 
+set -euo pipefail
+[[ -f "${VALIDATE_LIB:?VALIDATE_LIB is required}" ]] || { printf '::error::%s: common.sh not found at %s\n' "${0##*/}" "$VALIDATE_LIB"; exit 1; }
 source "$VALIDATE_LIB"
+declare -F has_unsafe_chars >/dev/null || { printf '::error::%s: common.sh did not define has_unsafe_chars\n' "${0##*/}"; exit 1; }
 
 : "${MARKETPLACE_PATH:?}"
 : "${MAX_BUMPS:?}"
@@ -55,7 +58,9 @@ while IFS= read -r entry; do
     [[ "$host" == "$h" || "$host" == *".$h" ]] && { ok=1; break; }
   done
   [[ -n "$ok" ]] || { skip "$name" "host '$host' not in allowlist"; continue; }
-  [[ -z "$subdir" ]] || { has_unsafe_chars "$subdir" && { skip "$name" "unsafe subdir"; continue; }; }
+  if [[ -n "$subdir" ]] && { has_unsafe_chars "$subdir" || [[ "$subdir" == *".."* ]] || [[ "$subdir" == /* ]]; }; then
+    skip "$name" "unsafe subdir"; continue
+  fi
 
   # || true masks SIGPIPE from head -1; the regex below catches partial reads.
   new_sha="$(git ls-remote -- "$full_url" HEAD 2>/dev/null | awk '{print $1}' | head -1 || true)"
@@ -85,6 +90,9 @@ while IFS= read -r entry; do
   [[ -f "$manifest" ]] || manifest="$target/plugin.json"
   if [[ ! -f "$manifest" ]]; then
     skip "$name" "no plugin manifest at $full_url@${new_sha:0:8}"; rm -rf -- "$dest"; continue
+  fi
+  if [[ -L "$manifest" ]] || [[ "$(realpath -- "$manifest")" != "$(realpath -- "$dest")"/* ]]; then
+    skip "$name" "manifest is a symlink or resolves outside the clone"; rm -rf -- "$dest"; continue
   fi
   if ! out="$(timeout 120 claude plugin validate "$manifest" 2>&1)"; then
     detail="$(grep -E '❯|Error:' <<<"$out" | head -1 | sed -E 's/^[[:space:]]+//')"
