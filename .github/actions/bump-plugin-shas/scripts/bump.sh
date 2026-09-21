@@ -49,15 +49,12 @@ while IFS= read -r entry; do
   else
     full_url="$url"
   fi
-  if has_unsafe_chars "$full_url" || [[ ! "$full_url" =~ ^https://[A-Za-z0-9./_-]+$ ]]; then
-    skip "$name" "unsafe url"; continue
+  # Shared with validate-plugins and scan-plugins so the SSRF contract cannot
+  # drift: https only, safe charset, bare IP rejected whatever ALLOWED_HOSTS
+  # says, then the allowlist.
+  if url_reason="$(url_unsafe_reason "$full_url")"; then
+    skip "$name" "url rejected: $url_reason"; continue
   fi
-  host="${full_url#https://}"; host="${host%%/*}"
-  ok=""
-  for h in $ALLOWED_HOSTS; do
-    [[ "$host" == "$h" || "$host" == *".$h" ]] && { ok=1; break; }
-  done
-  [[ -n "$ok" ]] || { skip "$name" "host '$host' not in allowlist"; continue; }
   if [[ -n "$subdir" ]] && { has_unsafe_chars "$subdir" || [[ "$subdir" == *".."* ]] || [[ "$subdir" == /* ]]; }; then
     skip "$name" "unsafe subdir"; continue
   fi

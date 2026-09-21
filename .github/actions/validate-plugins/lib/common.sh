@@ -73,27 +73,47 @@ assert_safe_string() {
 # URL must be https://<allowed-host>/<safe-chars> only.
 # Host must be in ALLOWED_HOSTS (space-separated) and must not be a bare IP.
 # SSRF guard: prevents cloning from metadata endpoints / internal ranges.
-assert_safe_url() {
+#
+# Non-fatal form: echoes a short reason and returns 0 when the URL must NOT be
+# handed to git, returns 1 when it is safe (same sense as has_unsafe_chars).
+# scan.sh and bump.sh skip one target and keep going rather than aborting, so
+# they call this directly instead of the asserting wrapper. One implementation
+# is what stops the three actions drifting apart on the SSRF contract.
+url_unsafe_reason() {
   local url="$1"
-  assert_safe_string "url" "$url"
+  if has_unsafe_chars "$url"; then
+    printf 'contains unsafe characters'; return 0
+  fi
   if [[ ! "$url" =~ ^https://[A-Za-z0-9./_-]+$ ]]; then
-    die "url does not match ^https://[A-Za-z0-9./_-]+\$ : $url"
+    printf 'does not match ^https://[A-Za-z0-9./_-]+$'; return 0
   fi
   local host="${url#https://}"
   host="${host%%/*}"
+  # Rejected ahead of the allowlist and independently of it: an operator who
+  # puts an IP in ALLOWED_HOSTS must not thereby open a path to a metadata
+  # endpoint or an internal range.
   if [[ "$host" =~ ^[0-9.]+$ ]] || [[ "$host" =~ : ]]; then
-    die "url host is a bare IP address (not permitted): $host"
+    printf 'host is a bare IP address or carries a port'; return 0
   fi
-  : "${ALLOWED_HOSTS:?ALLOWED_HOSTS must be set (action.yml provides the default)}"
-  local allowed="$ALLOWED_HOSTS"
-  local ok=""
+  # Empty is fail-closed rather than fatal: this runs inside a command
+  # substitution, where an exiting `:?` would be swallowed and read as safe.
+  local allowed="${ALLOWED_HOSTS:-}"
+  if [[ -z "$allowed" ]]; then
+    printf 'ALLOWED_HOSTS is empty'; return 0
+  fi
+  local h
   for h in $allowed; do
     if [[ "$host" == "$h" ]] || [[ "$host" == *".$h" ]]; then
-      ok=1; break
+      return 1
     fi
   done
-  if [[ -z "$ok" ]]; then
-    die "url host '$host' is not in the allowlist ($allowed)"
+  printf "host '%s' is not in the allowlist" "$host"; return 0
+}
+
+assert_safe_url() {
+  local reason
+  if reason="$(url_unsafe_reason "$1")"; then
+    die "url rejected ($reason): $1"
   fi
 }
 

@@ -103,21 +103,20 @@ while IFS= read -r ext; do
   if [[ "$url" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
     url="https://github.com/$url"
   fi
-  if has_unsafe_chars "$url" || [[ ! "$url" =~ ^https://[A-Za-z0-9./_-]+$ ]]; then
-    skip_target "$name" "url unsafe" "$loc"
-    group_end; continue
-  fi
-  host="${url#https://}"; host="${host%%/*}"
-  ok=""; for h in $ALLOWED_HOSTS; do [[ "$host" == "$h" || "$host" == *".$h" ]] && { ok=1; break; }; done
-  if [[ -z "$ok" ]]; then
-    skip_target "$name" "host not in allowlist" "$loc"
+  # Shared with validate-plugins and bump-plugin-shas so the SSRF contract
+  # cannot drift: https only, safe charset, bare IP rejected whatever
+  # ALLOWED_HOSTS says, then the allowlist.
+  if url_reason="$(url_unsafe_reason "$url")"; then
+    skip_target "$name" "url rejected: $url_reason" "$loc"
     group_end; continue
   fi
   if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
     skip_target "$name" "sha malformed" "$loc"
     group_end; continue
   fi
-  if [[ -n "$subdir" ]] && { has_unsafe_chars "$subdir" || [[ "$subdir" == *".."* ]]; }; then
+  # Absolute is rejected here too: this action runs standalone and never sees
+  # I9, so it cannot rely on the invariants having run.
+  if [[ -n "$subdir" ]] && { has_unsafe_chars "$subdir" || [[ "$subdir" == *".."* ]] || [[ "$subdir" == /* ]]; }; then
     skip_target "$name" "subdir unsafe" "$loc"
     group_end; continue
   fi
