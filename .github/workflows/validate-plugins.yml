@@ -17,7 +17,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
@@ -33,3 +33,4 @@ jobs:
         with:
           marketplace-path: .claude-plugin/marketplace.json
           skip-local-folders: "true"
+          claude-cli-version: "2.1.278"
