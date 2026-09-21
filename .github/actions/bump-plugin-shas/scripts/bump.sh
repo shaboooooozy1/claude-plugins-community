@@ -8,6 +8,13 @@ source "$VALIDATE_LIB"
 declare -F assert_helpers_defined >/dev/null || { printf '::error::%s: common.sh did not define assert_helpers_defined\n' "${0##*/}"; exit 1; }
 assert_helpers_defined
 
+# Marketplace names and validator-derived reasons reach the step summary and
+# the generated PR body, both Markdown. This action never runs I11, so a raw
+# newline would end a table row or list item and let the rest render as
+# Markdown, and a raw pipe would split the row. Every such cell goes through
+# this filter, matching what 90-report.sh and scan.sh do with their summaries.
+MD_CELL='def cell: (. // "") | tostring | gsub("[\\r\\n|]"; " ");'
+
 : "${MARKETPLACE_PATH:?}"
 : "${MAX_BUMPS:?}"
 [[ "$MAX_BUMPS" =~ ^[0-9]+$ ]] || die "max-bumps must be a non-negative integer (got: $MAX_BUMPS)"
@@ -131,13 +138,15 @@ group_end
   if (( applied > 0 )); then
     echo "| Plugin | Old SHA | New SHA |"
     echo "|---|---|---|"
-    jq -r '.[] | "| \(.name) | `\(.old_sha[0:12] // "(none)")` | `\(.new_sha[0:12])` |"' <<<"$bumped"
+    jq -r "$MD_CELL"'
+           .[] | "| \(.name|cell) | `\(.old_sha[0:12]//"(none)"|cell)` | `\(.new_sha[0:12])` |"' <<<"$bumped"
   fi
   if [[ "$(jq 'length' <<<"$skipped")" -gt 0 ]]; then
     echo
     echo "<details><summary>Skipped</summary>"
     echo
-    jq -r '.[] | "- **\(.name)** — \(.reason)"' <<<"$skipped"
+    jq -r "$MD_CELL"'
+           .[] | "- **\(.name|cell)** — \(.reason|cell)"' <<<"$skipped"
     echo
     echo "</details>"
   fi
@@ -209,10 +218,11 @@ body="$workroot/pr-body.md"
   echo
   echo "| Plugin | Old SHA | New SHA |"
   echo "|---|---|---|"
-  jq -r '.[] | "| \(.name) | `\(.old_sha[0:12] // "(none)")` | `\(.new_sha[0:12])` |"' <<<"$bumped"
+  jq -r "$MD_CELL"'
+         .[] | "| \(.name|cell) | `\(.old_sha[0:12]//"(none)"|cell)` | `\(.new_sha[0:12])` |"' <<<"$bumped"
   if [[ "$(jq 'length' <<<"$skipped")" -gt 0 ]]; then
     echo
-    echo "Skipped (not bumped — see run for details): $(jq -r 'map(.name) | join(", ")' <<<"$skipped")"
+    echo "Skipped (not bumped — see run for details): $(jq -r "$MD_CELL"'[.[].name|cell] | join(", ")' <<<"$skipped")"
   fi
 } > "$body"
 

@@ -173,6 +173,32 @@ if ( unset -f url_safe_or_reason; url_safe_or_reason "https://github.com/owner/r
   fail "undefined helper rejects" "expected non-zero from a missing function"
 else pass "undefined helper rejects"; fi
 
+# ---- path_contained_or_reason ----------------------------------------------
+# Steps 11, 40 and 41 all decide what to read from a contributor-controlled
+# path, and each had its own copy of this before they disagreed. Success means
+# contained, so a failure of the check cannot be read as containment.
+echo "-- path_contained_or_reason"
+PC="$TMP/pc"; mkdir -p "$PC/root/inner" "$PC/outside/deep"
+: > "$PC/root/inner/file"; : > "$PC/outside/deep/file"
+ln -s "$PC/outside" "$PC/root/escape"
+ln -s "$PC/root/inner/file" "$PC/outside/back-in"
+assert_returns_0       "self is contained"        path_contained_or_reason "$PC/root" "$PC/root"
+assert_returns_0       "descendant contained"     path_contained_or_reason "$PC/root/inner/file" "$PC/root"
+assert_returns_nonzero "sibling rejected"         path_contained_or_reason "$PC/outside/deep/file" "$PC/root"
+assert_returns_nonzero "symlink out rejected"     path_contained_or_reason "$PC/root/escape" "$PC/root"
+assert_returns_nonzero "via symlinked ancestor"   path_contained_or_reason "$PC/root/escape/deep/file" "$PC/root"
+assert_returns_nonzero "missing target rejected"  path_contained_or_reason "$PC/root/nope" "$PC/root"
+assert_returns_nonzero "missing root rejected"    path_contained_or_reason "$PC/root" "$PC/no-such-root"
+# A symlink pointing back INSIDE the root is contained — that is what makes
+# checking the manifest alone insufficient in step 11, where the source root
+# must be checked too.
+assert_returns_0       "symlink back in is contained" path_contained_or_reason "$PC/outside/back-in" "$PC/root"
+total=$((total+1))
+if why="$(path_contained_or_reason "$PC/outside/deep/file" "$PC/root")"; then
+  fail "reports a reason" "expected non-zero"
+elif [[ -n "$why" ]]; then pass "reports a reason"
+else fail "reports a reason" "empty reason"; fi
+
 # ---- assert_helpers_defined ------------------------------------------------
 echo "-- assert_helpers_defined"
 total=$((total+1))

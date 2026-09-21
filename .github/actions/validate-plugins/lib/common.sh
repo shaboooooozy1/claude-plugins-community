@@ -123,9 +123,44 @@ assert_safe_url() {
   fi
 }
 
+# Physical containment. Every lexical path check in this codebase is followed
+# by an operation that resolves symlinks (-f, -d, cd, jq, claude plugin
+# validate), so anything deciding WHAT gets read must compare resolved paths.
+# Returns 0 only when $1 resolves to $2 or below it, with a reason on stdout
+# otherwise — same polarity as url_safe_or_reason, so a failure of the check
+# itself cannot be read as containment. Three steps had their own copy of this
+# and they did not agree; keep it here.
+path_contained_or_reason() {
+  local target="$1" root="$2"
+  local root_phys target_phys
+  # Tested explicitly rather than with `realpath -e`: plain realpath succeeds
+  # on a path whose final component is absent (so a missing target would read
+  # as contained), and BSD realpath has no -e. A dangling symlink fails -e too,
+  # which is the outcome we want.
+  if [[ ! -e "$root" ]]; then
+    printf 'root %s does not exist' "$root"; return 1
+  fi
+  if [[ ! -e "$target" ]]; then
+    printf 'does not exist'; return 1
+  fi
+  root_phys="$(realpath -- "$root" 2>/dev/null || true)"
+  if [[ -z "$root_phys" ]]; then
+    printf 'cannot resolve root %s' "$root"; return 1
+  fi
+  target_phys="$(realpath -- "$target" 2>/dev/null || true)"
+  if [[ -z "$target_phys" ]]; then
+    printf 'cannot resolve %s' "$target"; return 1
+  fi
+  if [[ "$target_phys" != "$root_phys" && "$target_phys" != "$root_phys"/* ]]; then
+    printf 'resolves outside %s' "$root"; return 1
+  fi
+  return 0
+}
+
 # Every helper a security gate depends on, for the sentinel check each script
 # runs after sourcing. A missing one means the gate would not run at all.
 REQUIRED_HELPERS=(has_unsafe_chars annot_text log_untrusted url_safe_or_reason
+                  path_contained_or_reason
                   assert_safe_sha assert_safe_path assert_safe_ref)
 
 assert_helpers_defined() {

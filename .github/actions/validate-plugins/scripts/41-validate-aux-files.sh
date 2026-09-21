@@ -25,34 +25,31 @@ failures=0
 # Containment is checked against physical paths, not the spelling of "$f":
 # `-L "$f"` only sees a symlink in the FINAL component, so a contributor who
 # makes an ancestor (e.g. `hooks/`) a symlink would otherwise have jq read a
-# file outside the workspace. Same guard as the external manifest in step 30.
-root_phys="$(realpath -- "${GITHUB_WORKSPACE:-$PWD}" 2>/dev/null || true)"
-[[ -n "$root_phys" ]] || die "cannot resolve workspace root"
+# file outside the workspace. Shared with steps 11, 30 and 40 via common.sh.
+WS_ROOT="${GITHUB_WORKSPACE:-$PWD}"
 
 while IFS= read -r folder; do
   assert_safe_path "$folder"
-  folder_phys="$(realpath -- "$folder" 2>/dev/null || true)"
   # A folder that no longer exists holds no aux files; nothing to parse.
-  [[ -n "$folder_phys" ]] || continue
-  if [[ "$folder_phys" != "$root_phys" && "$folder_phys" != "$root_phys"/* ]]; then
-    error "$folder: resolves outside the workspace"
-    record_result "aux-files" "fail" "$folder" "folder resolves outside the workspace"
+  [[ -e "$folder" ]] || continue
+  if ! why="$(path_contained_or_reason "$folder" "$WS_ROOT")"; then
+    error "$folder: ${why:-not contained in the workspace}"
+    record_result "aux-files" "fail" "$folder" "${why:-not contained in the workspace}"
     failures=$((failures+1))
     continue
   fi
   for aux in "${AUX_FILES[@]}"; do
     f="$folder/$aux"
     [[ -f "$f" ]] || continue
-    f_phys="$(realpath -- "$f" 2>/dev/null || true)"
     if [[ -L "$f" ]]; then
       error "$f: is a symlink"
       record_result "aux-files" "fail" "$f" "symlink"
       failures=$((failures+1))
       continue
     fi
-    if [[ -z "$f_phys" || "$f_phys" != "$folder_phys"/* ]]; then
-      error "$f: resolves outside the plugin folder"
-      record_result "aux-files" "fail" "$f" "resolves outside the plugin folder"
+    if ! why="$(path_contained_or_reason "$f" "$folder")"; then
+      error "$f: ${why:-not contained in the plugin folder}"
+      record_result "aux-files" "fail" "$f" "${why:-not contained in the plugin folder}"
       failures=$((failures+1))
       continue
     fi

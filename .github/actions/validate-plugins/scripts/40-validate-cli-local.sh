@@ -19,14 +19,35 @@ fi
 
 failures=0
 
+# This step runs BEFORE the aux-file step, and 00-detect-changes.sh selects a
+# folder with `-f`, which follows symlinks. Without the same containment guard
+# here, a changed local plugin could point `claude plugin validate` at a
+# manifest outside the checkout before anything else looked.
+WS_ROOT="${GITHUB_WORKSPACE:-$PWD}"
+
 while IFS= read -r folder; do
   assert_safe_path "$folder"
   manifest="$folder/.claude-plugin/plugin.json"
-  log "---- $folder ----"
+  log "---- $(annot_text "$folder" 200) ----"
 
   if [[ ! -f "$manifest" ]]; then
     error "$folder: plugin.json missing (was present at detect time?)"
     record_result "cli-local" "fail" "$folder" "plugin.json missing"
+    failures=$((failures+1))
+    continue
+  fi
+
+  if [[ -L "$manifest" ]]; then
+    error "$folder: plugin.json is a symlink"
+    record_result "cli-local" "fail" "$folder" "plugin.json is a symlink"
+    failures=$((failures+1))
+    continue
+  fi
+
+  if ! why="$(path_contained_or_reason "$folder" "$WS_ROOT")" \
+     || ! why="$(path_contained_or_reason "$manifest" "$WS_ROOT")"; then
+    error "$folder: ${why:-not contained in the workspace}"
+    record_result "cli-local" "fail" "$folder" "${why:-not contained in the workspace}"
     failures=$((failures+1))
     continue
   fi
