@@ -69,7 +69,10 @@ while IFS= read -r entry; do
     continue
   fi
 
-  log "---- $name: $old_sha -> $new_sha ----"
+  # name and old_sha come straight from marketplace.json and this action never
+  # runs I11, so both are flattened. The constant prefix keeps the line from
+  # starting with `::`, which is the other half of forging a workflow command.
+  log "---- $(annot_text "$name" 100): $(annot_text "$old_sha" 64) -> $new_sha ----"
 
   dest="$workroot/ext-$checked"
   mkdir -p -- "$dest"
@@ -93,7 +96,10 @@ while IFS= read -r entry; do
     skip "$name" "manifest is a symlink or resolves outside the clone"; rm -rf -- "$dest"; continue
   fi
   if ! out="$(timeout 120 claude plugin validate "$manifest" 2>&1)"; then
-    detail="$(grep -E '❯|Error:' <<<"$out" | head -1 | sed -E 's/^[[:space:]]+//')"
+    # || true: grep exits 1 when the validator output carries none of these
+    # markers, and under `set -euo pipefail` that would abort the whole run
+    # instead of skipping this one plugin.
+    detail="$(grep -E '❯|Error:' <<<"$out" | head -1 | sed -E 's/^[[:space:]]+//' || true)"
     skip "$name" "validation failed at $full_url@${new_sha:0:8}: ${detail:-$(head -1 <<<"$out")}"
     rm -rf -- "$dest"; continue
   fi
@@ -107,7 +113,7 @@ while IFS= read -r entry; do
   bumped="$(jq -c --arg n "$name" --arg o "$old_sha" --arg s "$new_sha" \
     '. + [{name:$n, old_sha:$o, new_sha:$s}]' <<<"$bumped")"
   applied=$((applied+1))
-  log "  ✓ $name validated and bumped"
+  log "  ✓ $(annot_text "$name" 100) validated and bumped"
 done < <(jq -c '.plugins[] | select(.source | type=="object")' -- "$MARKETPLACE_PATH")
 
 group_end

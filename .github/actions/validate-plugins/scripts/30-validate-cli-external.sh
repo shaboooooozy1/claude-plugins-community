@@ -45,7 +45,10 @@ while IFS= read -r ext; do
   sha="$(jq -r '.source.sha // empty' <<<"$ext")"
   subdir="$(jq -r '.source.path // ""' <<<"$ext")"
 
-  log "---- $name ($kind) ----"
+  # I11 validates the name, but a consumer may demote it through
+  # WARN_INVARIANTS, so it can still reach here unchecked. Flattening plus the
+  # constant prefix is what keeps this line from forging a workflow command.
+  log "---- $(annot_text "$name" 100) ($(annot_text "$kind" 40)) ----"
 
   if [[ -z "$url" ]]; then
     error "$name: no url/repo field on source"
@@ -126,10 +129,13 @@ while IFS= read -r ext; do
   fi
 
   if out="$(timeout "$TIMEOUT_SECS" claude plugin validate "$manifest" 2>&1)"; then
-    log "  ✓ $name OK — $ref"
+    log "  ✓ $(annot_text "$name" 100) OK — $ref"
     record_result "cli-external" "pass" "$name" ""
   else
-    detail="$(grep -E '❯|Error:' <<<"$out" | head -1 | sed -E 's/^[[:space:]]+//')"
+    # || true: grep exits 1 when the validator output carries none of these
+    # markers, and under `set -euo pipefail` that would abort the whole step
+    # instead of failing this one plugin.
+    detail="$(grep -E '❯|Error:' <<<"$out" | head -1 | sed -E 's/^[[:space:]]+//' || true)"
     error "$name: claude plugin validate failed — $ref — ${detail:-see log}"
     log_untrusted "$out"
     record_result "cli-external" "fail" "$name" "$out"
