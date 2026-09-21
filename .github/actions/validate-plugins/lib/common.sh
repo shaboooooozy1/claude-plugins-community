@@ -74,18 +74,24 @@ assert_safe_string() {
 # Host must be in ALLOWED_HOSTS (space-separated) and must not be a bare IP.
 # SSRF guard: prevents cloning from metadata endpoints / internal ranges.
 #
-# Non-fatal form: echoes a short reason and returns 0 when the URL must NOT be
-# handed to git, returns 1 when it is safe (same sense as has_unsafe_chars).
-# scan.sh and bump.sh skip one target and keep going rather than aborting, so
-# they call this directly instead of the asserting wrapper. One implementation
-# is what stops the three actions drifting apart on the SSRF contract.
-url_unsafe_reason() {
+# Non-fatal form: returns 0 only when the URL is safe to hand to git, and
+# non-zero with a short reason on stdout otherwise. scan.sh and bump.sh skip
+# one target and keep going rather than aborting, so they call this directly
+# instead of the asserting wrapper. One implementation is what stops the three
+# actions drifting apart on the SSRF contract.
+#
+# The polarity is deliberately the OPPOSITE of has_unsafe_chars. Callers gate
+# on success, so any failure of this function itself must land on the reject
+# side: sourcing an older common.sh where it is undefined makes the call
+# substitution exit 127, and under `success == safe` that would wave the URL
+# through to git. Only an explicit `return 0` here means safe.
+url_safe_or_reason() {
   local url="$1"
   if has_unsafe_chars "$url"; then
-    printf 'contains unsafe characters'; return 0
+    printf 'contains unsafe characters'; return 1
   fi
   if [[ ! "$url" =~ ^https://[A-Za-z0-9./_-]+$ ]]; then
-    printf 'does not match ^https://[A-Za-z0-9./_-]+$'; return 0
+    printf 'does not match ^https://[A-Za-z0-9./_-]+$'; return 1
   fi
   local host="${url#https://}"
   host="${host%%/*}"
@@ -93,28 +99,43 @@ url_unsafe_reason() {
   # puts an IP in ALLOWED_HOSTS must not thereby open a path to a metadata
   # endpoint or an internal range.
   if [[ "$host" =~ ^[0-9.]+$ ]] || [[ "$host" =~ : ]]; then
-    printf 'host is a bare IP address or carries a port'; return 0
+    printf 'host is a bare IP address or carries a port'; return 1
   fi
   # Empty is fail-closed rather than fatal: this runs inside a command
-  # substitution, where an exiting `:?` would be swallowed and read as safe.
+  # substitution, where an exiting `:?` would be swallowed.
   local allowed="${ALLOWED_HOSTS:-}"
   if [[ -z "$allowed" ]]; then
-    printf 'ALLOWED_HOSTS is empty'; return 0
+    printf 'ALLOWED_HOSTS is empty'; return 1
   fi
   local h
   for h in $allowed; do
     if [[ "$host" == "$h" ]] || [[ "$host" == *".$h" ]]; then
-      return 1
+      return 0
     fi
   done
-  printf "host '%s' is not in the allowlist" "$host"; return 0
+  printf "host '%s' is not in the allowlist" "$host"; return 1
 }
 
 assert_safe_url() {
   local reason
-  if reason="$(url_unsafe_reason "$1")"; then
-    die "url rejected ($reason): $1"
+  if ! reason="$(url_safe_or_reason "$1")"; then
+    die "url rejected (${reason:-unvalidated}): $1"
   fi
+}
+
+# Every helper a security gate depends on, for the sentinel check each script
+# runs after sourcing. A missing one means the gate would not run at all.
+REQUIRED_HELPERS=(has_unsafe_chars annot_text log_untrusted url_safe_or_reason
+                  assert_safe_sha assert_safe_path assert_safe_ref)
+
+assert_helpers_defined() {
+  local fn
+  for fn in "${REQUIRED_HELPERS[@]}"; do
+    if ! declare -F "$fn" >/dev/null; then
+      printf '::error::%s: common.sh did not define %s\n' "${0##*/}" "$fn"
+      exit 1
+    fi
+  done
 }
 
 # SHA must be exactly 40 lowercase hex.

@@ -5,7 +5,8 @@
 set -euo pipefail
 [[ -f "${VALIDATE_LIB:?VALIDATE_LIB is required}" ]] || { printf '::error::%s: common.sh not found at %s\n' "${0##*/}" "$VALIDATE_LIB"; exit 1; }
 source "$VALIDATE_LIB"
-declare -F has_unsafe_chars >/dev/null || { printf '::error::%s: common.sh did not define has_unsafe_chars\n' "${0##*/}"; exit 1; }
+declare -F assert_helpers_defined >/dev/null || { printf '::error::%s: common.sh did not define assert_helpers_defined\n' "${0##*/}"; exit 1; }
+assert_helpers_defined
 
 : "${ANTHROPIC_API_KEY:?}"
 : "${MARKETPLACE_PATH:?}"
@@ -106,8 +107,8 @@ while IFS= read -r ext; do
   # Shared with validate-plugins and bump-plugin-shas so the SSRF contract
   # cannot drift: https only, safe charset, bare IP rejected whatever
   # ALLOWED_HOSTS says, then the allowlist.
-  if url_reason="$(url_unsafe_reason "$url")"; then
-    skip_target "$name" "url rejected: $url_reason" "$loc"
+  if ! url_reason="$(url_safe_or_reason "$url")"; then
+    skip_target "$name" "url rejected: ${url_reason:-unvalidated}" "$loc"
     group_end; continue
   fi
   if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then

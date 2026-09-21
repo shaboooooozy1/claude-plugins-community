@@ -5,7 +5,8 @@
 set -euo pipefail
 [[ -f "${VALIDATE_LIB:?VALIDATE_LIB is required}" ]] || { printf '::error::%s: common.sh not found at %s\n' "${0##*/}" "$VALIDATE_LIB"; exit 1; }
 source "$VALIDATE_LIB"
-declare -F has_unsafe_chars >/dev/null || { printf '::error::%s: common.sh did not define has_unsafe_chars\n' "${0##*/}"; exit 1; }
+declare -F assert_helpers_defined >/dev/null || { printf '::error::%s: common.sh did not define assert_helpers_defined\n' "${0##*/}"; exit 1; }
+assert_helpers_defined
 
 : "${MARKETPLACE_PATH:?}"
 : "${MAX_BUMPS:?}"
@@ -52,8 +53,8 @@ while IFS= read -r entry; do
   # Shared with validate-plugins and scan-plugins so the SSRF contract cannot
   # drift: https only, safe charset, bare IP rejected whatever ALLOWED_HOSTS
   # says, then the allowlist.
-  if url_reason="$(url_unsafe_reason "$full_url")"; then
-    skip "$name" "url rejected: $url_reason"; continue
+  if ! url_reason="$(url_safe_or_reason "$full_url")"; then
+    skip "$name" "url rejected: ${url_reason:-unvalidated}"; continue
   fi
   if [[ -n "$subdir" ]] && { has_unsafe_chars "$subdir" || [[ "$subdir" == *".."* ]] || [[ "$subdir" == /* ]]; }; then
     skip "$name" "unsafe subdir"; continue

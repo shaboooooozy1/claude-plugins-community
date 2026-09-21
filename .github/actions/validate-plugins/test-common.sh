@@ -144,24 +144,45 @@ assert_returns_nonzero "spaces in url"           assert_safe_url "https://github
 # is a SUFFIX but not a subdomain (e.g. "evilgithub.com") is rejected.
 assert_returns_nonzero "lookalike suffix host"   assert_safe_url "https://evilgithub.com/owner/repo"
 
-# ---- url_unsafe_reason -----------------------------------------------------
-# The non-fatal form scan.sh and bump.sh call. A bare IP must stay rejected
-# even when an operator puts it in ALLOWED_HOSTS: that is the SSRF contract,
-# and it is what kept the three actions' inline copies from agreeing before.
-echo "-- url_unsafe_reason"
-assert_returns_nonzero "safe url returns 1"      url_unsafe_reason "https://github.com/owner/repo"
-assert_returns_0       "bare IP flagged"         url_unsafe_reason "https://169.254.169.254/latest"
-assert_returns_0       "host:port flagged"       url_unsafe_reason "https://github.com:8080/x/y"
-assert_returns_0       "http flagged"            url_unsafe_reason "http://github.com/owner/repo"
-assert_returns_0       "host off allowlist"      url_unsafe_reason "https://evil.example/x/y"
+# ---- url_safe_or_reason ----------------------------------------------------
+# The non-fatal form scan.sh and bump.sh call. Success means SAFE, so that a
+# failed call (an older common.sh where it is undefined, exiting 127) lands on
+# the reject side instead of waving the URL through. A bare IP must stay
+# rejected even when an operator puts it in ALLOWED_HOSTS: that is the SSRF
+# contract, and what kept the actions' inline copies from agreeing before.
+echo "-- url_safe_or_reason"
+assert_returns_0       "safe url returns 0"      url_safe_or_reason "https://github.com/owner/repo"
+assert_returns_nonzero "bare IP rejected"        url_safe_or_reason "https://169.254.169.254/latest"
+assert_returns_nonzero "host:port rejected"      url_safe_or_reason "https://github.com:8080/x/y"
+assert_returns_nonzero "http rejected"           url_safe_or_reason "http://github.com/owner/repo"
+assert_returns_nonzero "host off allowlist"      url_safe_or_reason "https://evil.example/x/y"
 total=$((total+1))
-if ( ALLOWED_HOSTS="169.254.169.254 github.com" url_unsafe_reason "https://169.254.169.254/latest" ) >/dev/null; then
-  pass "bare IP rejected even when allowlisted"
-else fail "bare IP rejected even when allowlisted" "expected it to be flagged"; fi
+if ( ALLOWED_HOSTS="169.254.169.254 github.com" url_safe_or_reason "https://169.254.169.254/latest" ) >/dev/null; then
+  fail "bare IP rejected even when allowlisted" "expected non-zero"
+else pass "bare IP rejected even when allowlisted"; fi
 total=$((total+1))
-if ( ALLOWED_HOSTS="" url_unsafe_reason "https://github.com/owner/repo" ) >/dev/null; then
-  pass "empty ALLOWED_HOSTS fails closed"
-else fail "empty ALLOWED_HOSTS fails closed" "expected it to be flagged"; fi
+if ( ALLOWED_HOSTS="" url_safe_or_reason "https://github.com/owner/repo" ) >/dev/null; then
+  fail "empty ALLOWED_HOSTS fails closed" "expected non-zero"
+else pass "empty ALLOWED_HOSTS fails closed"; fi
+
+# The gate must fail CLOSED when the helper itself is missing: a caller doing
+# `if ! reason="$(url_safe_or_reason ...)"` sees 127 and must treat it as a
+# rejection, which is why success cannot be the "unsafe" side.
+total=$((total+1))
+if ( unset -f url_safe_or_reason; url_safe_or_reason "https://github.com/owner/repo" ) >/dev/null 2>&1; then
+  fail "undefined helper rejects" "expected non-zero from a missing function"
+else pass "undefined helper rejects"; fi
+
+# ---- assert_helpers_defined ------------------------------------------------
+echo "-- assert_helpers_defined"
+total=$((total+1))
+if ( assert_helpers_defined ) >/dev/null 2>&1; then
+  pass "passes with a complete common.sh"
+else fail "passes with a complete common.sh" "expected exit 0"; fi
+total=$((total+1))
+if ( unset -f url_safe_or_reason; assert_helpers_defined ) >/dev/null 2>&1; then
+  fail "catches a missing helper" "expected exit 1"
+else pass "catches a missing helper"; fi
 
 echo
 echo "=== $((total-failures))/$total passed ==="
