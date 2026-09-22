@@ -52,6 +52,49 @@ assert_returns_0       "rejects single quote"  has_unsafe_chars "a'b"
 assert_returns_0       "rejects double quote"  has_unsafe_chars 'a"b'
 assert_returns_0       "rejects backslash"     has_unsafe_chars 'a\b'
 
+# ---- annot_text ------------------------------------------------------------
+echo "-- annot_text"
+total=$((total+1))
+if [[ "$(annot_text $'a\r\nb::error::x')" == "a  b::error::x" ]]; then
+  pass "flattens CR/LF"
+else fail "flattens CR/LF" "got: $(annot_text $'a\r\nb::error::x')"; fi
+total=$((total+1))
+long="$(printf 'x%.0s' $(seq 1 600))"
+capped="$(annot_text "$long")"
+if [[ "${#capped}" -eq 500 ]]; then pass "caps at 500 by default"; else fail "caps at 500 by default" "len=${#capped}"; fi
+total=$((total+1))
+capped="$(annot_text "$long" 42)"
+if [[ "${#capped}" -eq 42 ]]; then pass "caps at explicit length"; else fail "caps at explicit length" "len=${#capped}"; fi
+
+# ---- annotation sinks ------------------------------------------------------
+# warn/error sanitise their own message: every caller (die, assert_safe_ref's
+# rejection, bump.sh's skip) passes contributor-derived text, and an embedded
+# newline would otherwise open a forged workflow command on the next line.
+echo "-- warn/error sinks"
+total=$((total+1))
+sink_out="$(warn "$(printf 'bad\n::error::forged')" 2>&1)"
+if [[ "$sink_out" == '::warning::bad ::error::forged' ]]; then
+  pass "warn() flattens newlines"
+else fail "warn() flattens newlines" "got: $sink_out"; fi
+total=$((total+1))
+sink_out="$(error "$(printf 'x\r\n::error::forged')" 2>&1)"
+if [[ "$sink_out" == '::error::x  ::error::forged' ]]; then
+  pass "error() flattens CR/LF"
+else fail "error() flattens CR/LF" "got: $sink_out"; fi
+
+# log_untrusted carries plugin/model/CLI output. Flattening newlines is not
+# enough for these: a value whose first line is `::error::...` would still be
+# read as a workflow command, so every line must be indented.
+total=$((total+1))
+sink_out="$(log_untrusted "$(printf '::error::forged\nsecond\n::set-output name=x::y')" 2>&1)"
+if ! grep -qE '^::' <<<"$sink_out"; then
+  pass "log_untrusted() cannot start a line with ::"
+else fail "log_untrusted() cannot start a line with ::" "got: $sink_out"; fi
+total=$((total+1))
+if [[ "$(log_untrusted "plain" 2>&1)" == '  | plain' ]]; then
+  pass "log_untrusted() keeps content readable"
+else fail "log_untrusted() keeps content readable" "got: $(log_untrusted "plain" 2>&1)"; fi
+
 # ---- assert_safe_sha -------------------------------------------------------
 echo "-- assert_safe_sha"
 assert_returns_0       "valid 40-hex lowercase"  assert_safe_sha "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -73,6 +116,18 @@ assert_returns_nonzero "metacharacter in path"   assert_safe_path 'a;rm/b'
 assert_returns_nonzero "whitespace in path"      assert_safe_path 'a b'
 assert_returns_nonzero "newline in path"         assert_safe_path $'a\nb'
 
+# ---- assert_safe_ref -------------------------------------------------------
+echo "-- assert_safe_ref"
+assert_returns_0       "remote branch"           assert_safe_ref "origin/main"
+assert_returns_0       "HEAD"                    assert_safe_ref "HEAD"
+assert_returns_0       "rev expression"          assert_safe_ref "HEAD~1"
+assert_returns_0       "40-hex sha"              assert_safe_ref "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+assert_returns_nonzero "long option"             assert_safe_ref "--upload-pack=x"
+assert_returns_nonzero "short option"            assert_safe_ref "-x"
+assert_returns_nonzero "whitespace"              assert_safe_ref "a b"
+assert_returns_nonzero "empty"                   assert_safe_ref ""
+assert_returns_nonzero "metacharacter"           assert_safe_ref 'main;rm'
+
 # ---- assert_safe_url -------------------------------------------------------
 echo "-- assert_safe_url"
 assert_returns_0       "github https"            assert_safe_url "https://github.com/owner/repo"
@@ -88,6 +143,117 @@ assert_returns_nonzero "spaces in url"           assert_safe_url "https://github
 # The allowlist matches "host == h" or "host == *.h" — confirm a host that
 # is a SUFFIX but not a subdomain (e.g. "evilgithub.com") is rejected.
 assert_returns_nonzero "lookalike suffix host"   assert_safe_url "https://evilgithub.com/owner/repo"
+
+# ---- url_safe_or_reason ----------------------------------------------------
+# The non-fatal form scan.sh and bump.sh call. Success means SAFE, so that a
+# failed call (an older common.sh where it is undefined, exiting 127) lands on
+# the reject side instead of waving the URL through. A bare IP must stay
+# rejected even when an operator puts it in ALLOWED_HOSTS: that is the SSRF
+# contract, and what kept the actions' inline copies from agreeing before.
+echo "-- url_safe_or_reason"
+assert_returns_0       "safe url returns 0"      url_safe_or_reason "https://github.com/owner/repo"
+assert_returns_nonzero "bare IP rejected"        url_safe_or_reason "https://169.254.169.254/latest"
+assert_returns_nonzero "host:port rejected"      url_safe_or_reason "https://github.com:8080/x/y"
+assert_returns_nonzero "http rejected"           url_safe_or_reason "http://github.com/owner/repo"
+assert_returns_nonzero "host off allowlist"      url_safe_or_reason "https://evil.example/x/y"
+total=$((total+1))
+if ( ALLOWED_HOSTS="169.254.169.254 github.com" url_safe_or_reason "https://169.254.169.254/latest" ) >/dev/null; then
+  fail "bare IP rejected even when allowlisted" "expected non-zero"
+else pass "bare IP rejected even when allowlisted"; fi
+total=$((total+1))
+if ( ALLOWED_HOSTS="" url_safe_or_reason "https://github.com/owner/repo" ) >/dev/null; then
+  fail "empty ALLOWED_HOSTS fails closed" "expected non-zero"
+else pass "empty ALLOWED_HOSTS fails closed"; fi
+
+# The gate must fail CLOSED when the helper itself is missing: a caller doing
+# `if ! reason="$(url_safe_or_reason ...)"` sees 127 and must treat it as a
+# rejection, which is why success cannot be the "unsafe" side.
+total=$((total+1))
+if ( unset -f url_safe_or_reason; url_safe_or_reason "https://github.com/owner/repo" ) >/dev/null 2>&1; then
+  fail "undefined helper rejects" "expected non-zero from a missing function"
+else pass "undefined helper rejects"; fi
+
+# ---- path_contained_or_reason ----------------------------------------------
+# Steps 11, 40 and 41 all decide what to read from a contributor-controlled
+# path, and each had its own copy of this before they disagreed. Success means
+# contained, so a failure of the check cannot be read as containment.
+echo "-- path_contained_or_reason"
+PC="$TMP/pc"; mkdir -p "$PC/root/inner" "$PC/outside/deep"
+: > "$PC/root/inner/file"; : > "$PC/outside/deep/file"
+ln -s "$PC/outside" "$PC/root/escape"
+ln -s "$PC/root/inner/file" "$PC/outside/back-in"
+assert_returns_0       "self is contained"        path_contained_or_reason "$PC/root" "$PC/root"
+assert_returns_0       "descendant contained"     path_contained_or_reason "$PC/root/inner/file" "$PC/root"
+assert_returns_nonzero "sibling rejected"         path_contained_or_reason "$PC/outside/deep/file" "$PC/root"
+assert_returns_nonzero "symlink out rejected"     path_contained_or_reason "$PC/root/escape" "$PC/root"
+assert_returns_nonzero "via symlinked ancestor"   path_contained_or_reason "$PC/root/escape/deep/file" "$PC/root"
+assert_returns_nonzero "missing target rejected"  path_contained_or_reason "$PC/root/nope" "$PC/root"
+assert_returns_nonzero "missing root rejected"    path_contained_or_reason "$PC/root" "$PC/no-such-root"
+# A symlink pointing back INSIDE the root is contained — that is what makes
+# checking the manifest alone insufficient in step 11, where the source root
+# must be checked too.
+assert_returns_0       "symlink back in is contained" path_contained_or_reason "$PC/outside/back-in" "$PC/root"
+total=$((total+1))
+if why="$(path_contained_or_reason "$PC/outside/deep/file" "$PC/root")"; then
+  fail "reports a reason" "expected non-zero"
+elif [[ -n "$why" ]]; then pass "reports a reason"
+else fail "reports a reason" "empty reason"; fi
+
+# ---- assert_helpers_defined ------------------------------------------------
+echo "-- assert_helpers_defined"
+total=$((total+1))
+if ( assert_helpers_defined ) >/dev/null 2>&1; then
+  pass "passes with a complete common.sh"
+else fail "passes with a complete common.sh" "expected exit 0"; fi
+total=$((total+1))
+if ( unset -f url_safe_or_reason; assert_helpers_defined ) >/dev/null 2>&1; then
+  fail "catches a missing helper" "expected exit 1"
+else pass "catches a missing helper"; fi
+
+# --- step completion tracking ------------------------------------------------
+# What makes 90-report.sh fail closed on a step that aborted part-way. Counting
+# `status=="fail"` rows cannot see that: a step killed by `set -e` records
+# nothing, so a run whose earlier steps logged passes aggregates to zero
+# failures.
+sc_tmp="$(mktemp -d)"
+
+total=$((total+1))
+out="$( STEPS_DIR="$sc_tmp/a/steps"; step_begin s1; step_done s1; incomplete_steps )"
+if [[ -z "$out" ]]; then pass "a step that began and finished is not incomplete"
+else fail "a step that began and finished is not incomplete" "got: $out"; fi
+
+total=$((total+1))
+out="$( STEPS_DIR="$sc_tmp/b/steps"; step_begin s1; step_done s1; step_begin s2; incomplete_steps )"
+if [[ "$out" == "s2" ]]; then pass "a step that began and did not finish is reported"
+else fail "a step that began and did not finish is reported" "expected s2, got: $out"; fi
+
+total=$((total+1))
+out="$( STEPS_DIR="$sc_tmp/c/steps"; incomplete_steps )"
+if [[ -z "$out" ]]; then pass "no steps dir at all is not an incomplete step"
+else fail "no steps dir at all is not an incomplete step" "got: $out"; fi
+
+# A step skipped by its `if:` in action.yml never begins, so it must not be
+# demanded — that is what keeps the check free of an expected-step list.
+total=$((total+1))
+out="$( STEPS_DIR="$sc_tmp/d/steps"; step_begin s1; step_done s1; incomplete_steps )"
+if [[ -z "$out" ]]; then pass "a never-begun step is not required to finish"
+else fail "a never-begun step is not required to finish" "got: $out"; fi
+
+# The real trap shape each step installs: done on a zero exit, not otherwise.
+run_trapped() (
+  STEPS_DIR="$sc_tmp/$1/steps"; local rc="$2"
+  ( STEP_ID=t1; step_begin "$STEP_ID"
+    trap 'r=$?; if [[ $r -eq 0 ]]; then step_done "$STEP_ID"; fi' EXIT
+    exit "$rc" ) >/dev/null 2>&1 || true
+  incomplete_steps
+)
+total=$((total+1))
+if [[ -z "$(run_trapped e 0)" ]]; then pass "trap marks done on exit 0"
+else fail "trap marks done on exit 0" "step reported incomplete"; fi
+total=$((total+1))
+if [[ "$(run_trapped f 1)" == "t1" ]]; then pass "trap leaves it incomplete on a non-zero exit"
+else fail "trap leaves it incomplete on a non-zero exit" "expected t1"; fi
+rm -rf "$sc_tmp"
 
 echo
 echo "=== $((total-failures))/$total passed ==="

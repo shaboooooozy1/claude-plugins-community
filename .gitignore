@@ -1,0 +1,14 @@
+# CI tooling scratch (lib/common.sh falls back to ./.validate-tmp when VALIDATE_TMP is unset;
+# bump.sh writes marketplace.json.tmp between redirect and mv)
+.validate-tmp/
+*.json.tmp
+
+# credentials / local env
+.env
+.env.*
+*.pem
+*.key
+*.p12
+.npmrc
+.netrc
+node_modules/

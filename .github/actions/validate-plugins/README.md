@@ -59,13 +59,18 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
       - uses: anthropics/claude-plugins-community/.github/actions/validate-plugins@<PINNED-SHA>
         with:
           marketplace-path: .claude-plugin/marketplace.json
+          claude-cli-version: "2.1.278"
 ```
+
+This repo's own `.github/workflows/validate-plugins.yml` pins
+`claude-cli-version` the same way; that pin is bumped by hand (there is no
+`package.json` for dependabot to track).
 
 ### Nightly drift detection
 
@@ -85,7 +90,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
       - uses: anthropics/claude-plugins-community/.github/actions/validate-plugins@<PINNED-SHA>
@@ -104,13 +109,16 @@ Repos that store one entry per file (e.g. `.claude-plugin/plugins/<name>.json`):
           entries-dir: .claude-plugin/plugins
 ```
 
+Per-file consumers must check out with `fetch-depth: 0`: I6/I7 need history,
+and I7 fails closed (hard error) when `base-ref` cannot be diffed.
+
 ## Inputs
 
 | Input | Default | Notes |
 |---|---|---|
 | `marketplace-path` | `.claude-plugin/marketplace.json` | |
 | `entries-dir` | `""` | set for per-file repos; enables I6/I7 |
-| `base-ref` | PR base / push `before` / `origin/main` | diff base for change detection |
+| `base-ref` | PR base / push `before` / `origin/main` | diff base for change detection; must match `^[A-Za-z0-9][A-Za-z0-9._/~^-]*$` and must never be set from a fork-controlled ref name (e.g. a PR head branch under `pull_request_target`) |
 | `warn-invariants` | `"I1 I3 I5 I8"` | invariant codes treated as WARN instead of ERROR |
 | `skip-external` | `false` | disable step 30 |
 | `skip-local-folders` | `false` | disable steps 40/41 |
@@ -146,7 +154,7 @@ source kinds added by the CLI are hardened automatically.
 | I6 | (per-file) `plugins/<x>.json` has `.name == "x"` |
 | I7 | (per-file) PR does not edit assembled `marketplace.json` directly |
 | I8 | Vendored `source` path exists and contains `.claude-plugin/plugin.json` |
-| I9 | All string fields under `source` contain no shell metacharacters |
+| I9 | All string fields under `source` contain no shell metacharacters; `source.path` (and a vendored `source`) is relative and contains no `..` |
 | I10 | `name`/`description` contain no hidden-Unicode (zero-width, BOM, bidi controls) |
 | I11 | `name` matches `^[a-z0-9][a-z0-9-]{1,63}$` |
 

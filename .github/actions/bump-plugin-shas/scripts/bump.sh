@@ -2,7 +2,18 @@
 # Discover stale external SHAs, validate at new HEAD, open one PR with all
 # passing bumps. See action.yml for the design rationale.
 
+set -euo pipefail
+[[ -f "${VALIDATE_LIB:?VALIDATE_LIB is required}" ]] || { printf '::error::%s: common.sh not found at %s\n' "${0##*/}" "$VALIDATE_LIB"; exit 1; }
 source "$VALIDATE_LIB"
+declare -F assert_helpers_defined >/dev/null || { printf '::error::%s: common.sh did not define assert_helpers_defined\n' "${0##*/}"; exit 1; }
+assert_helpers_defined
+
+# Marketplace names and validator-derived reasons reach the step summary and
+# the generated PR body, both Markdown. This action never runs I11, so a raw
+# newline would end a table row or list item and let the rest render as
+# Markdown, and a raw pipe would split the row. Every such cell goes through
+# this filter, matching what 90-report.sh and scan.sh do with their summaries.
+MD_CELL='def cell: (. // "") | tostring | gsub("[\\r\\n|]"; " ");'
 
 : "${MARKETPLACE_PATH:?}"
 : "${MAX_BUMPS:?}"
@@ -46,16 +57,15 @@ while IFS= read -r entry; do
   else
     full_url="$url"
   fi
-  if has_unsafe_chars "$full_url" || [[ ! "$full_url" =~ ^https://[A-Za-z0-9./_-]+$ ]]; then
-    skip "$name" "unsafe url"; continue
+  # Shared with validate-plugins and scan-plugins so the SSRF contract cannot
+  # drift: https only, safe charset, bare IP rejected whatever ALLOWED_HOSTS
+  # says, then the allowlist.
+  if ! url_reason="$(url_safe_or_reason "$full_url")"; then
+    skip "$name" "url rejected: ${url_reason:-unvalidated}"; continue
   fi
-  host="${full_url#https://}"; host="${host%%/*}"
-  ok=""
-  for h in $ALLOWED_HOSTS; do
-    [[ "$host" == "$h" || "$host" == *".$h" ]] && { ok=1; break; }
-  done
-  [[ -n "$ok" ]] || { skip "$name" "host '$host' not in allowlist"; continue; }
-  [[ -z "$subdir" ]] || { has_unsafe_chars "$subdir" && { skip "$name" "unsafe subdir"; continue; }; }
+  if [[ -n "$subdir" ]] && { has_unsafe_chars "$subdir" || [[ "$subdir" == *".."* ]] || [[ "$subdir" == /* ]]; }; then
+    skip "$name" "unsafe subdir"; continue
+  fi
 
   # || true masks SIGPIPE from head -1; the regex below catches partial reads.
   new_sha="$(git ls-remote -- "$full_url" HEAD 2>/dev/null | awk '{print $1}' | head -1 || true)"
@@ -66,7 +76,10 @@ while IFS= read -r entry; do
     continue
   fi
 
-  log "---- $name: $old_sha -> $new_sha ----"
+  # name and old_sha come straight from marketplace.json and this action never
+  # runs I11, so both are flattened. The constant prefix keeps the line from
+  # starting with `::`, which is the other half of forging a workflow command.
+  log "---- $(annot_text "$name" 100): $(annot_text "$old_sha" 64) -> $new_sha ----"
 
   dest="$workroot/ext-$checked"
   mkdir -p -- "$dest"
@@ -86,8 +99,23 @@ while IFS= read -r entry; do
   if [[ ! -f "$manifest" ]]; then
     skip "$name" "no plugin manifest at $full_url@${new_sha:0:8}"; rm -rf -- "$dest"; continue
   fi
+  # Both the plugin root and the manifest. A `source.path` can be a symlink out
+  # of the clone whose `.claude-plugin` symlinks back in: realpath(manifest)
+  # then lands inside while the root handed to the validator traverses outside.
+  # Shared helper rather than a hand-rolled realpath pair — step 30 and step 11
+  # had this same gap, which is how the three copies drifted apart.
+  if [[ -L "$manifest" ]]; then
+    skip "$name" "manifest is a symlink"; rm -rf -- "$dest"; continue
+  fi
+  if ! why="$(path_contained_or_reason "$target" "$dest")" \
+     || ! why="$(path_contained_or_reason "$manifest" "$dest")"; then
+    skip "$name" "${why:-not contained in the clone}"; rm -rf -- "$dest"; continue
+  fi
   if ! out="$(timeout 120 claude plugin validate "$manifest" 2>&1)"; then
-    detail="$(grep -E '❯|Error:' <<<"$out" | head -1 | sed -E 's/^[[:space:]]+//')"
+    # || true: grep exits 1 when the validator output carries none of these
+    # markers, and under `set -euo pipefail` that would abort the whole run
+    # instead of skipping this one plugin.
+    detail="$(grep -E '❯|Error:' <<<"$out" | head -1 | sed -E 's/^[[:space:]]+//' || true)"
     skip "$name" "validation failed at $full_url@${new_sha:0:8}: ${detail:-$(head -1 <<<"$out")}"
     rm -rf -- "$dest"; continue
   fi
@@ -101,7 +129,7 @@ while IFS= read -r entry; do
   bumped="$(jq -c --arg n "$name" --arg o "$old_sha" --arg s "$new_sha" \
     '. + [{name:$n, old_sha:$o, new_sha:$s}]' <<<"$bumped")"
   applied=$((applied+1))
-  log "  ✓ $name validated and bumped"
+  log "  ✓ $(annot_text "$name" 100) validated and bumped"
 done < <(jq -c '.plugins[] | select(.source | type=="object")' -- "$MARKETPLACE_PATH")
 
 group_end
@@ -119,13 +147,15 @@ group_end
   if (( applied > 0 )); then
     echo "| Plugin | Old SHA | New SHA |"
     echo "|---|---|---|"
-    jq -r '.[] | "| \(.name) | `\(.old_sha[0:12] // "(none)")` | `\(.new_sha[0:12])` |"' <<<"$bumped"
+    jq -r "$MD_CELL"'
+           .[] | "| \(.name|cell) | `\(.old_sha[0:12]//"(none)"|cell)` | `\(.new_sha[0:12])` |"' <<<"$bumped"
   fi
   if [[ "$(jq 'length' <<<"$skipped")" -gt 0 ]]; then
     echo
     echo "<details><summary>Skipped</summary>"
     echo
-    jq -r '.[] | "- **\(.name)** — \(.reason)"' <<<"$skipped"
+    jq -r "$MD_CELL"'
+           .[] | "- **\(.name|cell)** — \(.reason|cell)"' <<<"$skipped"
     echo
     echo "</details>"
   fi
@@ -197,10 +227,11 @@ body="$workroot/pr-body.md"
   echo
   echo "| Plugin | Old SHA | New SHA |"
   echo "|---|---|---|"
-  jq -r '.[] | "| \(.name) | `\(.old_sha[0:12] // "(none)")` | `\(.new_sha[0:12])` |"' <<<"$bumped"
+  jq -r "$MD_CELL"'
+         .[] | "| \(.name|cell) | `\(.old_sha[0:12]//"(none)"|cell)` | `\(.new_sha[0:12])` |"' <<<"$bumped"
   if [[ "$(jq 'length' <<<"$skipped")" -gt 0 ]]; then
     echo
-    echo "Skipped (not bumped — see run for details): $(jq -r 'map(.name) | join(", ")' <<<"$skipped")"
+    echo "Skipped (not bumped — see run for details): $(jq -r "$MD_CELL"'[.[].name|cell] | join(", ")' <<<"$skipped")"
   fi
 } > "$body"
 

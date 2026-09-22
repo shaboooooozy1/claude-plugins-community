@@ -18,7 +18,7 @@ fi
 # every shell) since the published binary is self-contained.
 NPM_PREFIX="$HOME/.npm-global"
 npm config set prefix "$NPM_PREFIX"
-npm install -g @anthropic-ai/claude-code@latest
+npm install -g "@anthropic-ai/claude-code@2.1.278"
 
 CLAUDE_BIN="$NPM_PREFIX/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe"
 if [ ! -e "$CLAUDE_BIN" ]; then

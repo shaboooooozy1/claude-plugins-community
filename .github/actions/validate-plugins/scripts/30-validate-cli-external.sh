@@ -9,6 +9,13 @@
 
 source "$ACTION_PATH/lib/common.sh"
 
+# Marks this step done only on a zero exit, so an abort part-way through
+# (a die, or set -e on an unexpected error) leaves it begun-but-unfinished
+# and 90-report.sh fails the run rather than aggregating to PASS.
+STEP_ID=30-cli-external
+step_begin "$STEP_ID"
+trap 'rc=$?; if [[ $rc -eq 0 ]]; then step_done "$STEP_ID"; fi' EXIT
+
 : "${VALIDATE_TMP:?}"
 CHANGES="$VALIDATE_TMP/changes.json"
 MP="$VALIDATE_TMP/marketplace.json"
@@ -35,7 +42,10 @@ fi
 failures=0
 idx=0
 workroot="$(mktemp -d)"
-trap 'rm -rf "$workroot"' EXIT
+# Re-arms rather than replaces: a bare `trap ... EXIT` here would drop the
+# step-completion handler installed above, and this step would then never mark
+# itself done even on a clean run.
+trap 'rc=$?; rm -rf "$workroot"; if [[ $rc -eq 0 ]]; then step_done "$STEP_ID"; fi' EXIT
 
 while IFS= read -r ext; do
   idx=$((idx+1))
@@ -45,7 +55,10 @@ while IFS= read -r ext; do
   sha="$(jq -r '.source.sha // empty' <<<"$ext")"
   subdir="$(jq -r '.source.path // ""' <<<"$ext")"
 
-  log "---- $name ($kind) ----"
+  # I11 validates the name, but a consumer may demote it through
+  # WARN_INVARIANTS, so it can still reach here unchecked. Flattening plus the
+  # constant prefix is what keeps this line from forging a workflow command.
+  log "---- $(annot_text "$name" 100) ($(annot_text "$kind" 40)) ----"
 
   if [[ -z "$url" ]]; then
     error "$name: no url/repo field on source"
@@ -65,10 +78,36 @@ while IFS= read -r ext; do
     url="https://github.com/$url"
   fi
 
-  # Defense-in-depth: re-assert safety even though schema + I4/I5/I9 already ran.
-  assert_safe_url "$url"
-  assert_safe_sha "$sha"
-  [[ -z "$subdir" ]] || assert_safe_path "$subdir"
+  # Defense-in-depth: re-check safety even though schema + I4/I5/I9 already ran.
+  #
+  # These reject the entry and carry on rather than calling the asserting
+  # wrappers, which `die`. Every other failure mode in this loop records a
+  # result and continues, and aborting here loses the rest of the sweep: with
+  # two entries where the first is off-allowlist, the second was never cloned
+  # and results.jsonl held one `fatal`/`die` row naming no plugin. Both shapes
+  # reach here un-rejected by the invariants — I4 checks URL syntax but not the
+  # host, and I5 (malformed sha) is warn-by-default — and validate-all-external
+  # sweeps 1714 entries, so one of them would end the run at the first.
+  # common.sh says as much: url_safe_or_reason exists so callers can skip one
+  # target rather than abort. scan.sh and bump.sh already use it.
+  if ! url_reason="$(url_safe_or_reason "$url")"; then
+    error "$name: url rejected (${url_reason:-unvalidated})"
+    record_result "cli-external" "fail" "$name" "url rejected: ${url_reason:-unvalidated}"
+    failures=$((failures+1))
+    continue
+  fi
+  if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+    error "$name: sha is not a 40-char lowercase hex string"
+    record_result "cli-external" "fail" "$name" "sha is not 40-char lowercase hex"
+    failures=$((failures+1))
+    continue
+  fi
+  if [[ -n "$subdir" ]] && { has_unsafe_chars "$subdir" || [[ "$subdir" == /* ]] || [[ "$subdir" == *".."* ]]; }; then
+    error "$name: source.path is absolute, contains '..', or has unsafe characters"
+    record_result "cli-external" "fail" "$name" "unsafe source.path"
+    failures=$((failures+1))
+    continue
+  fi
 
   ref="$url@${sha:0:8}${subdir:+ ($subdir)}"
   dest="$workroot/ext-$idx"
@@ -118,13 +157,36 @@ while IFS= read -r ext; do
     fi
   fi
 
+  # BOTH the plugin root and the manifest, via the shared helper. Checking the
+  # manifest alone is not enough: a cloned `subdir` can be a symlink out of the
+  # clone whose `.claude-plugin` symlinks back in, so realpath(manifest) lands
+  # inside while the plugin root the validator is handed traverses outside.
+  # Reproduced with dest/sub -> outside and outside/.claude-plugin -> dest/real,
+  # which the manifest-only test accepted. Same gap step 11 had; one helper now.
+  if [[ -L "$manifest" ]]; then
+    error "$name: plugin manifest is a symlink — $ref"
+    record_result "cli-external" "fail" "$name" "manifest is a symlink — $ref"
+    failures=$((failures+1))
+    continue
+  fi
+  if ! why="$(path_contained_or_reason "$target" "$dest")" \
+     || ! why="$(path_contained_or_reason "$manifest" "$dest")"; then
+    error "$name: ${why:-not contained in the clone} — $ref"
+    record_result "cli-external" "fail" "$name" "${why:-not contained in the clone} — $ref"
+    failures=$((failures+1))
+    continue
+  fi
+
   if out="$(timeout "$TIMEOUT_SECS" claude plugin validate "$manifest" 2>&1)"; then
-    log "  ✓ $name OK — $ref"
+    log "  ✓ $(annot_text "$name" 100) OK — $ref"
     record_result "cli-external" "pass" "$name" ""
   else
-    detail="$(grep -E '❯|Error:' <<<"$out" | head -1 | sed -E 's/^[[:space:]]+//')"
+    # || true: grep exits 1 when the validator output carries none of these
+    # markers, and under `set -euo pipefail` that would abort the whole step
+    # instead of failing this one plugin.
+    detail="$(grep -E '❯|Error:' <<<"$out" | head -1 | sed -E 's/^[[:space:]]+//' || true)"
     error "$name: claude plugin validate failed — $ref — ${detail:-see log}"
-    log "$out"
+    log_untrusted "$out"
     record_result "cli-external" "fail" "$name" "$out"
     failures=$((failures+1))
   fi
