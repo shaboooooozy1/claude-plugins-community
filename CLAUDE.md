@@ -83,6 +83,8 @@ duplicated predicate in this codebase has eventually drifted.
 | `annot_text` | echoes | Flattens CR/LF and caps length for text interpolated **into** a `::workflow-command` line. |
 | `log_untrusted` | prints | For plugin/model/CLI text printed **as** whole lines: indents every line so none can begin with `::`. |
 | `assert_helpers_defined` | exits 1 | Checks `REQUIRED_HELPERS`, every helper a security gate depends on. Both standalone actions call it after sourcing. |
+| `path_contained_or_reason` | **0 = contained**, reason on stdout | The one physical-containment implementation: resolves both paths and requires the target to be the root or below it. Every lexical path check is followed by something that resolves symlinks, so anything deciding *what gets read* must call this — on the plugin root as well as the manifest, since a root symlinked out whose manifest symlinks back in passes a manifest-only test. |
+| `step_begin` / `step_done` / `incomplete_steps` | mark / mark / echo | Step-completion tracking for `90-report.sh`. Each step marks itself begun on entry and done only on a zero exit (via an `EXIT` trap), so a step killed part-way is visible. Without it a step that aborts before recording anything leaves a results file full of passes and the report announces PASS. |
 | `cli_validate` | 0/1 | Runs `claude plugin validate`, classifies pass/warn/fail, honours `FAIL_ON_WARNINGS`. |
 
 Note the polarity split. `has_unsafe_chars` returns 0 for *unsafe*, but
@@ -197,7 +199,7 @@ must stay green.
 | Script | Covers | Run when you touch |
 |---|---|---|
 | `test-invariants.sh` | I1–I11 against synthetic `marketplace.json` fixtures; plus a real-git fixture for I7 (per-file mode, `BASE_REF=HEAD~1`); plus boundary/false-positive guards and `WARN_INVARIANTS` demotion behaviour; plus locale guards for I3/I10 (each asserted under both `LC_ALL=C` and `LC_ALL=C.utf8`) and whole-string-vs-per-line anchor guards for I3's whitespace rule | `scripts/11-validate-invariants.sh` |
-| `test-common.sh` | The `lib/common.sh` security predicates directly: `has_unsafe_chars`, `annot_text`, the `warn`/`error`/`log_untrusted` sinks, `assert_safe_sha`, `assert_safe_path`, `assert_safe_ref`, `assert_safe_url` and `url_safe_or_reason` (allowlist match, lookalike-host rejection, SSRF guards, bare IP rejected even when allowlisted, missing helper rejects), `assert_helpers_defined` | `lib/common.sh` |
+| `test-common.sh` | The `lib/common.sh` security predicates directly: `has_unsafe_chars`, `annot_text`, the `warn`/`error`/`log_untrusted` sinks, `assert_safe_sha`, `assert_safe_path`, `assert_safe_ref`, `assert_safe_url` and `url_safe_or_reason` (allowlist match, lookalike-host rejection, SSRF guards, bare IP rejected even when allowlisted, missing helper rejects), `assert_helpers_defined`, `path_contained_or_reason`, and the step-completion helpers including the `EXIT`-trap shape each step installs | `lib/common.sh` |
 
 Adding a new invariant means adding at least one fixture that exercises
 it (a positive case) plus a false-positive guard for any boundary it

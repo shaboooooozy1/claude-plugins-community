@@ -9,6 +9,13 @@
 
 source "$ACTION_PATH/lib/common.sh"
 
+# Marks this step done only on a zero exit, so an abort part-way through
+# (a die, or set -e on an unexpected error) leaves it begun-but-unfinished
+# and 90-report.sh fails the run rather than aggregating to PASS.
+STEP_ID=30-cli-external
+step_begin "$STEP_ID"
+trap 'rc=$?; if [[ $rc -eq 0 ]]; then step_done "$STEP_ID"; fi' EXIT
+
 : "${VALIDATE_TMP:?}"
 CHANGES="$VALIDATE_TMP/changes.json"
 MP="$VALIDATE_TMP/marketplace.json"
@@ -35,7 +42,10 @@ fi
 failures=0
 idx=0
 workroot="$(mktemp -d)"
-trap 'rm -rf "$workroot"' EXIT
+# Re-arms rather than replaces: a bare `trap ... EXIT` here would drop the
+# step-completion handler installed above, and this step would then never mark
+# itself done even on a clean run.
+trap 'rc=$?; rm -rf "$workroot"; if [[ $rc -eq 0 ]]; then step_done "$STEP_ID"; fi' EXIT
 
 while IFS= read -r ext; do
   idx=$((idx+1))
@@ -147,9 +157,22 @@ while IFS= read -r ext; do
     fi
   fi
 
-  if [[ -L "$manifest" ]] || [[ "$(realpath -- "$manifest")" != "$(realpath -- "$dest")"/* ]]; then
-    error "$name: plugin manifest is a symlink or resolves outside the clone — $ref"
-    record_result "cli-external" "fail" "$name" "manifest symlink/outside clone — $ref"
+  # BOTH the plugin root and the manifest, via the shared helper. Checking the
+  # manifest alone is not enough: a cloned `subdir` can be a symlink out of the
+  # clone whose `.claude-plugin` symlinks back in, so realpath(manifest) lands
+  # inside while the plugin root the validator is handed traverses outside.
+  # Reproduced with dest/sub -> outside and outside/.claude-plugin -> dest/real,
+  # which the manifest-only test accepted. Same gap step 11 had; one helper now.
+  if [[ -L "$manifest" ]]; then
+    error "$name: plugin manifest is a symlink — $ref"
+    record_result "cli-external" "fail" "$name" "manifest is a symlink — $ref"
+    failures=$((failures+1))
+    continue
+  fi
+  if ! why="$(path_contained_or_reason "$target" "$dest")" \
+     || ! why="$(path_contained_or_reason "$manifest" "$dest")"; then
+    error "$name: ${why:-not contained in the clone} — $ref"
+    record_result "cli-external" "fail" "$name" "${why:-not contained in the clone} — $ref"
     failures=$((failures+1))
     continue
   fi

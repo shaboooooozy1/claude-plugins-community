@@ -83,7 +83,11 @@ entry_line() {
 
 while IFS= read -r ext; do
   idx=$((idx+1))
-  name="$(jq -r '.name' <<<"$ext")"
+  # The type test comes first because `jq -r` renders a non-string scalar as
+  # text: 123, true and null all arrive as strings that satisfy the I11 regex
+  # below, so a malformed entry would be reported as scanned and passing.
+  # `empty` leaves $name unset, which the regex then rejects.
+  name="$(jq -r 'if (.name | type) == "string" then .name else empty end' <<<"$ext")"
   # scan-plugins runs standalone and never sees I11, so the name must be
   # re-checked here before it reaches any annotation or log line.
   if [[ ! "$name" =~ ^[a-z0-9][a-z0-9-]{1,63}$ ]]; then

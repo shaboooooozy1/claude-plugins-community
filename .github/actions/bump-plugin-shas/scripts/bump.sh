@@ -99,8 +99,17 @@ while IFS= read -r entry; do
   if [[ ! -f "$manifest" ]]; then
     skip "$name" "no plugin manifest at $full_url@${new_sha:0:8}"; rm -rf -- "$dest"; continue
   fi
-  if [[ -L "$manifest" ]] || [[ "$(realpath -- "$manifest")" != "$(realpath -- "$dest")"/* ]]; then
-    skip "$name" "manifest is a symlink or resolves outside the clone"; rm -rf -- "$dest"; continue
+  # Both the plugin root and the manifest. A `source.path` can be a symlink out
+  # of the clone whose `.claude-plugin` symlinks back in: realpath(manifest)
+  # then lands inside while the root handed to the validator traverses outside.
+  # Shared helper rather than a hand-rolled realpath pair — step 30 and step 11
+  # had this same gap, which is how the three copies drifted apart.
+  if [[ -L "$manifest" ]]; then
+    skip "$name" "manifest is a symlink"; rm -rf -- "$dest"; continue
+  fi
+  if ! why="$(path_contained_or_reason "$target" "$dest")" \
+     || ! why="$(path_contained_or_reason "$manifest" "$dest")"; then
+    skip "$name" "${why:-not contained in the clone}"; rm -rf -- "$dest"; continue
   fi
   if ! out="$(timeout 120 claude plugin validate "$manifest" 2>&1)"; then
     # || true: grep exits 1 when the validator output carries none of these

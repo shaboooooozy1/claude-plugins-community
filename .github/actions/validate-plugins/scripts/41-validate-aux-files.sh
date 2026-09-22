@@ -6,6 +6,13 @@
 
 source "$ACTION_PATH/lib/common.sh"
 
+# Marks this step done only on a zero exit, so an abort part-way through
+# (a die, or set -e on an unexpected error) leaves it begun-but-unfinished
+# and 90-report.sh fails the run rather than aggregating to PASS.
+STEP_ID=41-aux-files
+step_begin "$STEP_ID"
+trap 'rc=$?; if [[ $rc -eq 0 ]]; then step_done "$STEP_ID"; fi' EXIT
+
 : "${VALIDATE_TMP:?}"
 CHANGES="$VALIDATE_TMP/changes.json"
 AUX_FILES=(".mcp.json" ".lsp.json" "hooks/hooks.json")

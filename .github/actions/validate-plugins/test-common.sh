@@ -210,6 +210,51 @@ if ( unset -f url_safe_or_reason; assert_helpers_defined ) >/dev/null 2>&1; then
   fail "catches a missing helper" "expected exit 1"
 else pass "catches a missing helper"; fi
 
+# --- step completion tracking ------------------------------------------------
+# What makes 90-report.sh fail closed on a step that aborted part-way. Counting
+# `status=="fail"` rows cannot see that: a step killed by `set -e` records
+# nothing, so a run whose earlier steps logged passes aggregates to zero
+# failures.
+sc_tmp="$(mktemp -d)"
+
+total=$((total+1))
+out="$( STEPS_DIR="$sc_tmp/a/steps"; step_begin s1; step_done s1; incomplete_steps )"
+if [[ -z "$out" ]]; then pass "a step that began and finished is not incomplete"
+else fail "a step that began and finished is not incomplete" "got: $out"; fi
+
+total=$((total+1))
+out="$( STEPS_DIR="$sc_tmp/b/steps"; step_begin s1; step_done s1; step_begin s2; incomplete_steps )"
+if [[ "$out" == "s2" ]]; then pass "a step that began and did not finish is reported"
+else fail "a step that began and did not finish is reported" "expected s2, got: $out"; fi
+
+total=$((total+1))
+out="$( STEPS_DIR="$sc_tmp/c/steps"; incomplete_steps )"
+if [[ -z "$out" ]]; then pass "no steps dir at all is not an incomplete step"
+else fail "no steps dir at all is not an incomplete step" "got: $out"; fi
+
+# A step skipped by its `if:` in action.yml never begins, so it must not be
+# demanded — that is what keeps the check free of an expected-step list.
+total=$((total+1))
+out="$( STEPS_DIR="$sc_tmp/d/steps"; step_begin s1; step_done s1; incomplete_steps )"
+if [[ -z "$out" ]]; then pass "a never-begun step is not required to finish"
+else fail "a never-begun step is not required to finish" "got: $out"; fi
+
+# The real trap shape each step installs: done on a zero exit, not otherwise.
+run_trapped() (
+  STEPS_DIR="$sc_tmp/$1/steps"; local rc="$2"
+  ( STEP_ID=t1; step_begin "$STEP_ID"
+    trap 'r=$?; if [[ $r -eq 0 ]]; then step_done "$STEP_ID"; fi' EXIT
+    exit "$rc" ) >/dev/null 2>&1 || true
+  incomplete_steps
+)
+total=$((total+1))
+if [[ -z "$(run_trapped e 0)" ]]; then pass "trap marks done on exit 0"
+else fail "trap marks done on exit 0" "step reported incomplete"; fi
+total=$((total+1))
+if [[ "$(run_trapped f 1)" == "t1" ]]; then pass "trap leaves it incomplete on a non-zero exit"
+else fail "trap leaves it incomplete on a non-zero exit" "expected t1"; fi
+rm -rf "$sc_tmp"
+
 echo
 echo "=== $((total-failures))/$total passed ==="
 [[ "$failures" -eq 0 ]]

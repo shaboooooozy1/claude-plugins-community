@@ -41,6 +41,35 @@ record_result() {
     >> "$RESULTS_FILE"
 }
 
+# ---- step completion tracking ---------------------------------------------
+# 90-report.sh runs with `if: always()`, so it also runs after a step aborted
+# part-way. Counting `status=="fail"` rows is not enough to catch that: a step
+# that dies from `set -e` on an unexpected error (a failed jq, a failed mkdir)
+# records nothing, so a run whose earlier steps logged passes still aggregates
+# to zero failures and reports PASS. Presence of the results file does not help
+# either, for the same reason.
+#
+# Each step marks itself begun and, on every path that is a real completion
+# (including the early "nothing to do" exits), done. The report then fails on
+# any step that began without finishing. A step skipped by its `if:` in
+# action.yml never begins, so it is never required to finish — no expected-step
+# list to keep in sync.
+STEPS_DIR="${VALIDATE_TMP:-./.validate-tmp}/steps"
+
+step_begin() { mkdir -p "$STEPS_DIR"; : > "$STEPS_DIR/$1.begin"; }
+step_done()  { mkdir -p "$STEPS_DIR"; : > "$STEPS_DIR/$1.done"; }
+
+# Echoes the id of every step that began and did not finish, one per line.
+incomplete_steps() {
+  local b id
+  [[ -d "$STEPS_DIR" ]] || return 0
+  for b in "$STEPS_DIR"/*.begin; do
+    [[ -e "$b" ]] || continue
+    id="$(basename -- "$b" .begin)"
+    [[ -e "$STEPS_DIR/$id.done" ]] || printf '%s\n' "$id"
+  done
+}
+
 # ---- safety predicates / assertions ---------------------------------------
 
 # Returns 0 if the value contains shell metacharacters or whitespace.

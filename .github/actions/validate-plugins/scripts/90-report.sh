@@ -23,6 +23,24 @@ elif ! any_fail="$(jq -s 'map(select(.status=="fail")) | length' -- "$RESULTS" 2
   any_fail=1
 fi
 
+# A non-empty results file is not evidence that validation finished. A step
+# that aborts from `set -e` on an unexpected error records nothing, so a run
+# whose earlier steps logged passes still aggregates to zero failures. Each
+# step marks itself begun on entry and done only on a zero exit, so anything
+# begun-but-unfinished means that step did not reach its end.
+incomplete=""
+if ! incomplete="$(incomplete_steps)"; then
+  error "report: could not determine step completion — treating the run as failed"
+  incomplete="(unknown)"
+fi
+if [[ -n "$incomplete" ]]; then
+  while IFS= read -r s; do
+    [[ -n "$s" ]] || continue
+    error "report: step '$s' started but did not finish"
+  done <<<"$incomplete"
+  any_fail=$((any_fail + 1))
+fi
+
 {
   echo "## Plugin validation report"
   echo
@@ -39,6 +57,13 @@ fi
   echo
   if [[ -n "$no_results" ]]; then
     echo "**Result: FAIL** — no validation results were recorded, so an earlier step did not complete"
+  elif [[ -n "$incomplete" ]]; then
+    echo "**Result: FAIL** — these steps started but did not finish, so the run is not a clean pass:"
+    echo
+    while IFS= read -r s; do
+      [[ -n "$s" ]] || continue
+      echo "- \`$(printf '%s' "$s" | tr -d '\r\n|`')\`"
+    done <<<"$incomplete"
   elif [[ "$any_fail" -gt 0 ]]; then
     echo "**Result: FAIL** ($any_fail failure(s))"
   else
