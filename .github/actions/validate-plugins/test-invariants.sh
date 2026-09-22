@@ -94,6 +94,95 @@ EOF
 f=$(mk i10); printf '{"plugins":[{"name":"abc","description":"hello​world ten chars","source":"./x"}]}' > "$f"
 assert_fires "I10 hidden unicode" I10 "$f"
 
+# Locale independence for I3/I10. The bash forms these replaced were only
+# character-aware in a multibyte locale; under LC_ALL=C they compared bytes,
+# and the byte set of the hidden-Unicode literals is shared by almost every
+# common non-ASCII character. An em dash alone hard-failed the gate, and 709
+# entries of the real marketplace fired I10 with no hidden Unicode in any of
+# them. These run under an explicit LC_ALL so a runner with no locale set —
+# a `container:` job, a self-hosted runner — is covered, which is exactly the
+# false-positive guard CLAUDE.md requires for a boundary like this.
+run_invariants_locale() {
+  local loc="$1" mp="$2"
+  ( export VALIDATE_TMP="$TMP/vl" MARKETPLACE_PATH="$mp" BASE_REF=HEAD \
+           WARN_INVARIANTS="" ENTRIES_DIR="" LC_ALL="$loc" LANG="$loc"
+    rm -rf "$VALIDATE_TMP"; mkdir -p "$VALIDATE_TMP"
+    cp "$mp" "$VALIDATE_TMP/marketplace.json"
+    bash scripts/11-validate-invariants.sh 2>&1 || true )
+}
+
+# Legitimate non-ASCII text: em dash, accented letter, arrow, CJK. None of it
+# is a zero-width or bidi control, so nothing may fire in any locale.
+f=$(mk i10_nonascii)
+python3 -c "
+import json,sys
+json.dump({'plugins':[{'name':'abc','description':'Plots — charts, café data, x → y, 日本語',
+                       'source':{'source':'url','url':'https://github.com/x/y','sha':'a'*40}}]},
+          open(sys.argv[1],'w'), ensure_ascii=False)" "$f"
+for loc in C C.utf8; do
+  total=$((total+1))
+  out="$(run_invariants_locale "$loc" "$f")"
+  if grep -qE 'invariant (I3|I10):' <<<"$out"; then
+    echo "  FAIL I10 legitimate non-ASCII under LC_ALL=$loc — expected no I3/I10, got:"
+    grep -E 'invariant (I3|I10):' <<<"$out" | sed 's/^/    /'
+    failures=$((failures+1))
+  else echo "  PASS I10 legitimate non-ASCII stays clean under LC_ALL=$loc"; fi
+done
+
+# The check must still catch a real one in a C locale, not merely stop firing.
+for loc in C C.utf8; do
+  total=$((total+1))
+  if run_invariants_locale "$loc" "$TMP/i10.json" | grep -q "invariant I10:"; then
+    echo "  PASS I10 hidden unicode still fires under LC_ALL=$loc"
+  else
+    echo "  FAIL I10 hidden unicode under LC_ALL=$loc — expected I10 to fire"
+    failures=$((failures+1))
+  fi
+done
+
+# I3's bound is documented in characters. A 1500-character description of
+# 2-byte characters measures 3000 bytes and was flagged under LC_ALL=C.
+f=$(mk i3_chars)
+python3 -c "
+import json,sys
+json.dump({'plugins':[{'name':'abc','description':'é'*1500,
+                       'source':{'source':'url','url':'https://github.com/x/y','sha':'a'*40}}]},
+          open(sys.argv[1],'w'), ensure_ascii=False)" "$f"
+for loc in C C.utf8; do
+  total=$((total+1))
+  if run_invariants_locale "$loc" "$f" | grep -q 'description length'; then
+    echo "  FAIL I3 1500-char description under LC_ALL=$loc — measured in bytes"
+    failures=$((failures+1))
+  else echo "  PASS I3 1500-char description counts characters under LC_ALL=$loc"; fi
+done
+
+# I3 whitespace anchors apply to the whole description, not to each line.
+# The sed form this replaced anchored per line, so any description with an
+# indented continuation line was reported as having leading/trailing
+# whitespace it does not have — 53 entries of the real marketplace, including
+# ones containing no non-ASCII character at all.
+i3_ws_case() {  # <label> <expect: fire|clean> <python-repr description>
+  local label="$1" expect="$2" desc="$3" g
+  g=$(mk "i3ws_$(printf '%s' "$label" | tr -c 'a-z0-9' _)")
+  python3 -c "
+import json,sys
+json.dump({'plugins':[{'name':'abc','description':$desc,
+                       'source':{'source':'url','url':'https://github.com/x/y','sha':'a'*40}}]},
+          open(sys.argv[1],'w'))" "$g"
+  total=$((total+1))
+  if run_invariants_locale C "$g" | grep -q 'leading/trailing whitespace'; then
+    if [[ "$expect" == fire ]]; then echo "  PASS I3 whitespace: $label fires"
+    else echo "  FAIL I3 whitespace: $label — false positive"; failures=$((failures+1)); fi
+  else
+    if [[ "$expect" == clean ]]; then echo "  PASS I3 whitespace: $label clean"
+    else echo "  FAIL I3 whitespace: $label — expected it to fire"; failures=$((failures+1)); fi
+  fi
+}
+i3_ws_case "internal trailing space on a non-final line" clean "'ten chars ok   \nsecond line'"
+i3_ws_case "indented continuation line"                  clean "'ten chars ok\n   second line'"
+i3_ws_case "genuine leading whitespace"                  fire  "' ten chars ok\nsecond line'"
+i3_ws_case "genuine trailing whitespace"                 fire  "'ten chars ok\nsecond line '"
+
 f=$(mk i11 <<'EOF'
 {"plugins":[{"name":"Bad_Name","description":"ten chars ok","source":"./x"}]}
 EOF

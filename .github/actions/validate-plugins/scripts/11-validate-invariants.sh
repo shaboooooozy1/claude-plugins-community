@@ -53,28 +53,65 @@ sorted="$(jq -r '[.plugins[].name | ascii_downcase] | . == (.|sort)' -- "$MP")"
 dups="$(jq -r '[.plugins[].name] | group_by(.) | map(select(length>1) | .[0]) | .[]' -- "$MP")"
 [[ -z "$dups" ]] || flag "I2" "duplicate plugin names: $(tr '\n' ' ' <<<"$dups")"
 
+# I3/I10/I11 — per-entry name/description checks.
+#
+# The hidden-Unicode test, the length and the whitespace test are all computed
+# in jq rather than in bash, because every bash equivalent is locale-dependent
+# and this action runs on runners whose locale nobody controls. A glob bracket
+# expression is character-aware only in a multibyte locale; `${#s}` counts
+# characters only in one. Under LC_ALL=C — which is what a `container:` job or
+# a self-hosted runner with no locale set gets — both fall back to bytes, and
+# the byte set of the hidden-Unicode literals (E2, EF, 80, 8B-8F, BB, BF, ...)
+# is shared by almost every common non-ASCII character. An em dash was enough:
+# 709 of this repo's own entries fired I10 under C and none of them contain any
+# hidden Unicode, while I10 blocks by default, so the whole gate hard-failed on
+# ordinary text. jq decodes JSON to codepoints, so these give the documented
+# character semantics identically on every runner.
+#
 # U+200B ZWSP, U+200C ZWNJ, U+200D ZWJ, U+200E LRM, U+200F RLM,
-# U+202A-202E bidi embedding/override, U+2066-2069 bidi isolates, U+FEFF BOM
-HIDDEN_UNI=$'​‌‍‎‏‪‫‬‭‮⁦⁧⁨⁩﻿'
-
-# I3/I10/I11 — per-entry name/description checks
-while IFS= read -r entry; do
-  name="$(jq -r '.name' <<<"$entry")"
-  desc="$(jq -r '.description' <<<"$entry")"
+# U+202A-202E bidi embedding/override, U+2066-2069 bidi isolates, U+FEFF BOM.
+#
+# The whitespace test moved here for a second reason on top of the locale one
+# (`[[:space:]]` covers Unicode spaces under some locales and ASCII only under
+# others): it used sed, whose ^ and $ anchor to each LINE. A description with
+# an indented continuation line was therefore reported as having leading or
+# trailing whitespace it does not have — 53 entries of this marketplace,
+# several containing no non-ASCII character at all. These anchors apply to the
+# whole description, which is what the rule has always meant.
+#
+# One jq invocation for the whole stream rather than two per entry, which also
+# takes this loop from ~10.7s to ~0.04s on the 1714-entry marketplace.
+# @tsv escapes any tab or newline inside a name, so a hostile value cannot
+# forge extra fields or extra lines.
+while IFS=$'\t' read -r name hidden dlen badws; do
   if [[ ! "$name" =~ ^[a-z0-9][a-z0-9-]{1,63}$ ]]; then
     flag "I11" "$name: name does not match ^[a-z0-9][a-z0-9-]{1,63}\$" "$name"
   fi
-  if [[ "$name$desc" == *["$HIDDEN_UNI"]* ]]; then
+  if [[ "$hidden" == "true" ]]; then
     flag "I10" "$name: name/description contains hidden-Unicode (zero-width or bidi control)" "$name"
   fi
-  len=${#desc}
-  if (( len < 10 || len > 2000 )); then
-    flag "I3" "$name: description length $len not in [10,2000]" "$name"
+  if (( dlen < 10 || dlen > 2000 )); then
+    flag "I3" "$name: description length $dlen not in [10,2000]" "$name"
   fi
-  if [[ "$desc" != "$(printf '%s' "$desc" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')" ]]; then
+  if [[ "$badws" == "true" ]]; then
     flag "I3" "$name: description has leading/trailing whitespace" "$name"
   fi
-done < <(jq -c '.plugins[]' -- "$MP")
+done < <(jq -r '
+  def hidden: test("[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]");
+  # \x{...}, not \u.... jq resolves \uXXXX inside a string literal, but this
+  # string IS the regex, so the escape has to be one Oniguruma understands.
+  # Written \u here it degrades to a literal `u` plus digits, and the ranges
+  # then span most of ASCII: "ten chars ok" matched, and every entry was
+  # flagged for trailing whitespace it does not have.
+  def ws: "[\\s\\x{00a0}\\x{1680}\\x{2000}-\\x{200a}\\x{2028}\\x{2029}\\x{202f}\\x{205f}\\x{3000}]";
+  .plugins[]
+  | (.name // "") as $n
+  | (.description // "") as $d
+  | [ $n,
+      (($n + $d) | hidden),
+      ($d | length),
+      ($d | test("^" + ws) or test(ws + "$"))
+    ] | @tsv' -- "$MP")
 
 # I4 / I5 / I9 — external sources (shape-agnostic: applies to any object source).
 # We don't enumerate source kinds here; the canonical schema check is step 20.

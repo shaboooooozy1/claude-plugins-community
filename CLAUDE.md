@@ -148,6 +148,17 @@ in lockstep if policy changes.
 - Emit GitHub annotations with `::notice::`, `::warning file=...,line=...::`,
   `::error file=...,line=...::` rather than plain `echo` for things a
   reviewer should see.
+- **Character-level tests on plugin text belong in `jq`, not in bash or
+  `sed`.** Bash glob bracket expressions and `${#s}` are character-aware only
+  in a multibyte locale and fall back to bytes under `LC_ALL=C`, which is what
+  a `container:` job or a self-hosted runner with no locale set gets; `sed`
+  anchors `^`/`$` per line, not per string. Both produced silent false
+  positives here, one of them on a blocking invariant. `jq` decodes JSON to
+  codepoints, so it behaves identically on every runner. Anchor any regex you
+  write there with Oniguruma escapes (`\x{a0}`), not `\uXXXX` — jq resolves
+  `\uXXXX` in a string literal, but a string that *is* a regex needs an escape
+  the regex engine understands, and `\u` silently degrades into a character
+  range spanning most of ASCII.
 
 ### Validation pipeline (step-by-step)
 
@@ -185,7 +196,7 @@ must stay green.
 
 | Script | Covers | Run when you touch |
 |---|---|---|
-| `test-invariants.sh` | I1–I11 against synthetic `marketplace.json` fixtures; plus a real-git fixture for I7 (per-file mode, `BASE_REF=HEAD~1`); plus boundary/false-positive guards and `WARN_INVARIANTS` demotion behaviour | `scripts/11-validate-invariants.sh` |
+| `test-invariants.sh` | I1–I11 against synthetic `marketplace.json` fixtures; plus a real-git fixture for I7 (per-file mode, `BASE_REF=HEAD~1`); plus boundary/false-positive guards and `WARN_INVARIANTS` demotion behaviour; plus locale guards for I3/I10 (each asserted under both `LC_ALL=C` and `LC_ALL=C.utf8`) and whole-string-vs-per-line anchor guards for I3's whitespace rule | `scripts/11-validate-invariants.sh` |
 | `test-common.sh` | The `lib/common.sh` security predicates directly: `has_unsafe_chars`, `annot_text`, the `warn`/`error`/`log_untrusted` sinks, `assert_safe_sha`, `assert_safe_path`, `assert_safe_ref`, `assert_safe_url` and `url_safe_or_reason` (allowlist match, lookalike-host rejection, SSRF guards, bare IP rejected even when allowlisted, missing helper rejects), `assert_helpers_defined` | `lib/common.sh` |
 
 Adding a new invariant means adding at least one fixture that exercises
