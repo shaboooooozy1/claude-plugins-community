@@ -137,17 +137,23 @@ while IFS= read -r entry; do
   fi
   p_clean="${p#./}"
   manifest="$p_clean/.claude-plugin/plugin.json"
-  if [[ ! -f "$manifest" ]]; then
-    flag "I8" "$name: vendored source '$p' has no .claude-plugin/plugin.json" "$name"
+  # The checks above are lexical and `-f`/`-e` follow symlinks, so BOTH the
+  # source root and the manifest must be tested for containment. The root is
+  # tested FIRST, ahead of the manifest-existence branch: that branch ends in
+  # `continue`, so an escaped source whose target happens to carry no
+  # plugin.json would otherwise be reported as a warn-by-default I8 "no
+  # manifest" and the escape never named at all. I9 rather than I8 because a
+  # path escape has to block.
+  # Guarded on existence so the severity contract holds: a source that is
+  # simply absent is the genuine I8 case and must stay in the warn tier, and
+  # only a path that exists and resolves outside is promoted. A dangling
+  # symlink fails -e and lands on I8 too, correctly — nothing can read it.
+  if [[ -e "$p_clean" ]] && ! why="$(path_contained_or_reason "$p_clean" "$WS_ROOT")"; then
+    flag "I9" "$name: vendored source '$p' ${why:-is not contained}" "$name"
     continue
   fi
-  # The checks above are lexical and `-f` follows symlinks. BOTH the source
-  # root and the manifest must be contained: a source symlinked out of the
-  # checkout whose plugin.json symlinks back in would otherwise pass on the
-  # manifest alone, while `claude plugin validate` still follows the root
-  # outside. I9 rather than I8: a path escape must block, I8 is warn-by-default.
-  if ! why="$(path_contained_or_reason "$p_clean" "$WS_ROOT")"; then
-    flag "I9" "$name: vendored source '$p' ${why:-is not contained}" "$name"
+  if [[ ! -f "$manifest" ]]; then
+    flag "I8" "$name: vendored source '$p' has no .claude-plugin/plugin.json" "$name"
     continue
   fi
   if ! why="$(path_contained_or_reason "$manifest" "$WS_ROOT")"; then

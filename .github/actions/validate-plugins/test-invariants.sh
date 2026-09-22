@@ -202,10 +202,13 @@ EOF
 # A vendored source may be a symlink out of the checkout. The lexical checks
 # above cannot see that, and `-f` follows it, so containment is checked on the
 # resolved path. Needs a real workspace, so it runs in its own directory.
+# $3 is WARN_INVARIANTS, defaulting to "" so everything blocks. The severity
+# guards below pass the shipped default instead, because what they assert is
+# that a finding stays in the warn tier.
 run_in_workspace() {
-  local ws="$1" mp="$2"
+  local ws="$1" mp="$2" warn="${3-}"
   ( cd "$ws" \
-    && VALIDATE_TMP="$ws/.v" MARKETPLACE_PATH="$mp" BASE_REF=HEAD WARN_INVARIANTS="" \
+    && VALIDATE_TMP="$ws/.v" MARKETPLACE_PATH="$mp" BASE_REF=HEAD WARN_INVARIANTS="$warn" \
        ENTRIES_DIR="" GITHUB_WORKSPACE="$ws" ACTION_PATH="$ACTION_PATH" \
        bash -c 'rm -rf "$VALIDATE_TMP"; mkdir -p "$VALIDATE_TMP"
                 cp "$MARKETPLACE_PATH" "$VALIDATE_TMP/marketplace.json"
@@ -231,6 +234,42 @@ total=$((total+1))
 if run_in_workspace "$ws" "$ws/mp-real.json" | grep -qE '::error|::warning'; then
   echo "  FAIL I9 real vendored source stays clean — unexpected finding"; failures=$((failures+1))
 else echo "  PASS I9 real vendored source stays clean"; fi
+
+# The escape must be caught even when the target carries no plugin.json. The
+# manifest-existence branch ends in `continue`, so testing containment after it
+# let this case report only a warn-by-default I8 "no manifest" and exit 0 —
+# naming the wrong problem and not blocking. Root containment is tested first.
+mkdir -p "$TMP/bare-outside"
+ln -s "$TMP/bare-outside" "$ws/nomanifest"
+ln -s "$TMP/does-not-exist-anywhere" "$ws/dangling"
+cat > "$ws/mp-nomanifest.json" <<'EOF'
+{"plugins":[{"name":"sneaky","description":"ten chars ok","source":"./nomanifest"}]}
+EOF
+cat > "$ws/mp-missing.json" <<'EOF'
+{"plugins":[{"name":"typo","description":"ten chars ok","source":"./does-not-exist"}]}
+EOF
+cat > "$ws/mp-dangling.json" <<'EOF'
+{"plugins":[{"name":"dangly","description":"ten chars ok","source":"./dangling"}]}
+EOF
+total=$((total+1))
+if run_in_workspace "$ws" "$ws/mp-nomanifest.json" | grep -q "invariant I9:"; then
+  echo "  PASS I9 escaped vendored source with no manifest — I9 fires"
+else echo "  FAIL I9 escaped vendored source with no manifest — expected I9 to fire"; failures=$((failures+1)); fi
+
+# Severity guards for the existence condition on that check. A source that is
+# simply absent, or a dangling symlink, is the genuine I8 case and must stay in
+# the warn tier under the shipped default; promoting it would break the
+# WARN_INVARIANTS contract downstream repos rely on.
+for case_name in missing dangling; do
+  total=$((total+1))
+  out="$(run_in_workspace "$ws" "$ws/mp-$case_name.json" "I1 I3 I5 I8")"
+  if grep -q "invariant I8:" <<<"$out" && ! grep -q '::error' <<<"$out"; then
+    echo "  PASS I8 $case_name vendored source stays a warning"
+  else
+    echo "  FAIL I8 $case_name vendored source — expected a warning-only I8"
+    failures=$((failures+1))
+  fi
+done
 
 # Annotation injection: a newline inside a source field must fire I9 AND must
 # not be able to start a forged ::error line of its own.
