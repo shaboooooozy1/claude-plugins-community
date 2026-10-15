@@ -13,9 +13,17 @@
 
 source "$ACTION_PATH/lib/common.sh"
 
+# Marks this step done only on a zero exit, so an abort part-way through
+# (a die, or set -e on an unexpected error) leaves it begun-but-unfinished
+# and 90-report.sh fails the run rather than aggregating to PASS.
+STEP_ID=00-detect-changes
+step_begin "$STEP_ID"
+trap 'rc=$?; if [[ $rc -eq 0 ]]; then step_done "$STEP_ID"; fi' EXIT
+
 : "${BASE_REF:?BASE_REF is required}"
 : "${MARKETPLACE_PATH:?MARKETPLACE_PATH is required}"
 : "${VALIDATE_TMP:?VALIDATE_TMP is required}"
+assert_safe_ref "$BASE_REF"
 
 mkdir -p "$VALIDATE_TMP"
 
@@ -24,7 +32,7 @@ group_start "Detect changes vs $BASE_REF"
 ALL_CHANGED=0
 if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
   warn "BASE_REF '$BASE_REF' not resolvable; fetching"
-  if ! git fetch --depth=1 origin "$BASE_REF" 2>/dev/null; then
+  if ! git fetch --depth=1 origin -- "$BASE_REF" 2>/dev/null; then
     warn "fetch of $BASE_REF failed; treating ALL entries and folders as changed"
     ALL_CHANGED=1
   fi
@@ -32,13 +40,15 @@ fi
 
 if (( ALL_CHANGED )); then
   DIFF_FILES=""
-elif ! DIFF_FILES="$(git diff --name-only "$BASE_REF"...HEAD 2>&1)"; then
+elif ! DIFF_FILES="$(git diff --name-only "$BASE_REF"...HEAD -- 2>&1)"; then
   warn "git diff failed ($DIFF_FILES); treating ALL entries and folders as changed"
   ALL_CHANGED=1
   DIFF_FILES=""
 fi
 log "Changed files:"
-log "$DIFF_FILES"
+# A pull request may add a path that begins with `::`, which GitHub would read
+# as a workflow command on its own line.
+log_untrusted "$DIFF_FILES"
 
 # ---- assemble / copy marketplace ------------------------------------------
 
@@ -75,7 +85,7 @@ else
   # Single-file: diff plugins[] between base and head. Use file inputs (not
   # --argjson) because the marketplace can be >1MB and would overflow argv.
   if git cat-file -e "$BASE_REF:$MARKETPLACE_PATH" 2>/dev/null; then
-    git show "$BASE_REF:$MARKETPLACE_PATH" > "$VALIDATE_TMP/marketplace.base.json"
+    git show "$BASE_REF:$MARKETPLACE_PATH" -- > "$VALIDATE_TMP/marketplace.base.json"
   else
     echo '{"plugins":[]}' > "$VALIDATE_TMP/marketplace.base.json"
   fi

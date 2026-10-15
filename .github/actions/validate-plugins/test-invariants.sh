@@ -94,6 +94,95 @@ EOF
 f=$(mk i10); printf '{"plugins":[{"name":"abc","description":"hello​world ten chars","source":"./x"}]}' > "$f"
 assert_fires "I10 hidden unicode" I10 "$f"
 
+# Locale independence for I3/I10. The bash forms these replaced were only
+# character-aware in a multibyte locale; under LC_ALL=C they compared bytes,
+# and the byte set of the hidden-Unicode literals is shared by almost every
+# common non-ASCII character. An em dash alone hard-failed the gate, and 709
+# entries of the real marketplace fired I10 with no hidden Unicode in any of
+# them. These run under an explicit LC_ALL so a runner with no locale set —
+# a `container:` job, a self-hosted runner — is covered, which is exactly the
+# false-positive guard CLAUDE.md requires for a boundary like this.
+run_invariants_locale() {
+  local loc="$1" mp="$2"
+  ( export VALIDATE_TMP="$TMP/vl" MARKETPLACE_PATH="$mp" BASE_REF=HEAD \
+           WARN_INVARIANTS="" ENTRIES_DIR="" LC_ALL="$loc" LANG="$loc"
+    rm -rf "$VALIDATE_TMP"; mkdir -p "$VALIDATE_TMP"
+    cp "$mp" "$VALIDATE_TMP/marketplace.json"
+    bash scripts/11-validate-invariants.sh 2>&1 || true )
+}
+
+# Legitimate non-ASCII text: em dash, accented letter, arrow, CJK. None of it
+# is a zero-width or bidi control, so nothing may fire in any locale.
+f=$(mk i10_nonascii)
+python3 -c "
+import json,sys
+json.dump({'plugins':[{'name':'abc','description':'Plots — charts, café data, x → y, 日本語',
+                       'source':{'source':'url','url':'https://github.com/x/y','sha':'a'*40}}]},
+          open(sys.argv[1],'w'), ensure_ascii=False)" "$f"
+for loc in C C.utf8; do
+  total=$((total+1))
+  out="$(run_invariants_locale "$loc" "$f")"
+  if grep -qE 'invariant (I3|I10):' <<<"$out"; then
+    echo "  FAIL I10 legitimate non-ASCII under LC_ALL=$loc — expected no I3/I10, got:"
+    grep -E 'invariant (I3|I10):' <<<"$out" | sed 's/^/    /'
+    failures=$((failures+1))
+  else echo "  PASS I10 legitimate non-ASCII stays clean under LC_ALL=$loc"; fi
+done
+
+# The check must still catch a real one in a C locale, not merely stop firing.
+for loc in C C.utf8; do
+  total=$((total+1))
+  if run_invariants_locale "$loc" "$TMP/i10.json" | grep -q "invariant I10:"; then
+    echo "  PASS I10 hidden unicode still fires under LC_ALL=$loc"
+  else
+    echo "  FAIL I10 hidden unicode under LC_ALL=$loc — expected I10 to fire"
+    failures=$((failures+1))
+  fi
+done
+
+# I3's bound is documented in characters. A 1500-character description of
+# 2-byte characters measures 3000 bytes and was flagged under LC_ALL=C.
+f=$(mk i3_chars)
+python3 -c "
+import json,sys
+json.dump({'plugins':[{'name':'abc','description':'é'*1500,
+                       'source':{'source':'url','url':'https://github.com/x/y','sha':'a'*40}}]},
+          open(sys.argv[1],'w'), ensure_ascii=False)" "$f"
+for loc in C C.utf8; do
+  total=$((total+1))
+  if run_invariants_locale "$loc" "$f" | grep -q 'description length'; then
+    echo "  FAIL I3 1500-char description under LC_ALL=$loc — measured in bytes"
+    failures=$((failures+1))
+  else echo "  PASS I3 1500-char description counts characters under LC_ALL=$loc"; fi
+done
+
+# I3 whitespace anchors apply to the whole description, not to each line.
+# The sed form this replaced anchored per line, so any description with an
+# indented continuation line was reported as having leading/trailing
+# whitespace it does not have — 53 entries of the real marketplace, including
+# ones containing no non-ASCII character at all.
+i3_ws_case() {  # <label> <expect: fire|clean> <python-repr description>
+  local label="$1" expect="$2" desc="$3" g
+  g=$(mk "i3ws_$(printf '%s' "$label" | tr -c 'a-z0-9' _)")
+  python3 -c "
+import json,sys
+json.dump({'plugins':[{'name':'abc','description':$desc,
+                       'source':{'source':'url','url':'https://github.com/x/y','sha':'a'*40}}]},
+          open(sys.argv[1],'w'))" "$g"
+  total=$((total+1))
+  if run_invariants_locale C "$g" | grep -q 'leading/trailing whitespace'; then
+    if [[ "$expect" == fire ]]; then echo "  PASS I3 whitespace: $label fires"
+    else echo "  FAIL I3 whitespace: $label — false positive"; failures=$((failures+1)); fi
+  else
+    if [[ "$expect" == clean ]]; then echo "  PASS I3 whitespace: $label clean"
+    else echo "  FAIL I3 whitespace: $label — expected it to fire"; failures=$((failures+1)); fi
+  fi
+}
+i3_ws_case "internal trailing space on a non-final line" clean "'ten chars ok   \nsecond line'"
+i3_ws_case "indented continuation line"                  clean "'ten chars ok\n   second line'"
+i3_ws_case "genuine leading whitespace"                  fire  "' ten chars ok\nsecond line'"
+i3_ws_case "genuine trailing whitespace"                 fire  "'ten chars ok\nsecond line '"
+
 f=$(mk i11 <<'EOF'
 {"plugins":[{"name":"Bad_Name","description":"ten chars ok","source":"./x"}]}
 EOF
@@ -122,10 +211,11 @@ EOF
 ) >/dev/null 2>&1
 
 i7_run() {
+  local base="${1:-HEAD~1}"
   ( cd "$i7_repo"
     export VALIDATE_TMP="$TMP/v-i7" \
            MARKETPLACE_PATH=".claude-plugin/marketplace.json" \
-           BASE_REF="HEAD~1" \
+           BASE_REF="$base" \
            WARN_INVARIANTS="" \
            ENTRIES_DIR="plugins"
     rm -rf "$VALIDATE_TMP"; mkdir -p "$VALIDATE_TMP"
@@ -138,6 +228,15 @@ if i7_run | grep -q "invariant I7:"; then
   echo "  PASS I7 direct MP edit — I7 fires"
 else
   echo "  FAIL I7 direct MP edit — expected I7 to fire"
+  failures=$((failures+1))
+fi
+
+# I7 must fail closed: an undiffable BASE_REF is an I7 error, not a silent pass.
+total=$((total+1))
+if i7_run "0000000000000000000000000000000000000000" | grep -q "invariant I7: cannot diff"; then
+  echo "  PASS I7 undiffable BASE_REF — I7 fires (fail closed)"
+else
+  echo "  FAIL I7 undiffable BASE_REF — expected I7 to fire"
   failures=$((failures+1))
 fi
 
@@ -166,6 +265,114 @@ f=$(mk i9_path <<'EOF'
 {"plugins":[{"name":"abc","description":"ten chars ok","source":{"source":"git-subdir","url":"https://github.com/x/y","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path":"sub;rm"}}]}
 EOF
 ); assert_fires "I9 metachar in source.path" I9 "$f"
+
+# I9: traversal / absolute paths in object source.path and vendored source.
+f=$(mk i9_traversal <<'EOF'
+{"plugins":[{"name":"abc","description":"ten chars ok","source":{"source":"git-subdir","url":"https://github.com/x/y","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path":"../x"}}]}
+EOF
+); assert_fires "I9 traversal in source.path" I9 "$f"
+
+f=$(mk i9_abs <<'EOF'
+{"plugins":[{"name":"abc","description":"ten chars ok","source":{"source":"git-subdir","url":"https://github.com/x/y","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path":"/etc"}}]}
+EOF
+); assert_fires "I9 absolute source.path" I9 "$f"
+
+f=$(mk i9_vendored_abs <<'EOF'
+{"plugins":[{"name":"abc","description":"ten chars ok","source":"/etc/passwd"}]}
+EOF
+); assert_fires "I9 absolute vendored source" I9 "$f"
+
+# False-positive guard: a dotted (but not '..') relative path is fine.
+f=$(mk i9_dotted <<'EOF'
+{"plugins":[{"name":"aaa","description":"A valid description here.","source":{"source":"git-subdir","url":"https://github.com/x/y","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path":"packages/foo.bar"}}]}
+EOF
+); assert_clean "I9 dotted path is not traversal" "$f"
+
+# A vendored source may be a symlink out of the checkout. The lexical checks
+# above cannot see that, and `-f` follows it, so containment is checked on the
+# resolved path. Needs a real workspace, so it runs in its own directory.
+# $3 is WARN_INVARIANTS, defaulting to "" so everything blocks. The severity
+# guards below pass the shipped default instead, because what they assert is
+# that a finding stays in the warn tier.
+run_in_workspace() {
+  local ws="$1" mp="$2" warn="${3-}"
+  ( cd "$ws" \
+    && VALIDATE_TMP="$ws/.v" MARKETPLACE_PATH="$mp" BASE_REF=HEAD WARN_INVARIANTS="$warn" \
+       ENTRIES_DIR="" GITHUB_WORKSPACE="$ws" ACTION_PATH="$ACTION_PATH" \
+       bash -c 'rm -rf "$VALIDATE_TMP"; mkdir -p "$VALIDATE_TMP"
+                cp "$MARKETPLACE_PATH" "$VALIDATE_TMP/marketplace.json"
+                bash "$ACTION_PATH/scripts/11-validate-invariants.sh" 2>&1 || true' )
+}
+
+ws="$TMP/ws"; outside="$TMP/outside"
+mkdir -p "$ws" "$outside/.claude-plugin" "$ws/real-plugin/.claude-plugin"
+echo '{"name":"real-plugin"}' > "$ws/real-plugin/.claude-plugin/plugin.json"
+echo '{"name":"escaped"}'     > "$outside/.claude-plugin/plugin.json"
+ln -s "$outside" "$ws/escaped"
+cat > "$ws/mp-escape.json" <<'EOF'
+{"plugins":[{"name":"escaped","description":"ten chars ok","source":"./escaped"}]}
+EOF
+cat > "$ws/mp-real.json" <<'EOF'
+{"plugins":[{"name":"real-plugin","description":"ten chars ok","source":"./real-plugin"}]}
+EOF
+total=$((total+1))
+if run_in_workspace "$ws" "$ws/mp-escape.json" | grep -q "invariant I9:"; then
+  echo "  PASS I9 symlinked vendored source — I9 fires"
+else echo "  FAIL I9 symlinked vendored source — expected I9 to fire"; failures=$((failures+1)); fi
+total=$((total+1))
+if run_in_workspace "$ws" "$ws/mp-real.json" | grep -qE '::error|::warning'; then
+  echo "  FAIL I9 real vendored source stays clean — unexpected finding"; failures=$((failures+1))
+else echo "  PASS I9 real vendored source stays clean"; fi
+
+# The escape must be caught even when the target carries no plugin.json. The
+# manifest-existence branch ends in `continue`, so testing containment after it
+# let this case report only a warn-by-default I8 "no manifest" and exit 0 —
+# naming the wrong problem and not blocking. Root containment is tested first.
+mkdir -p "$TMP/bare-outside"
+ln -s "$TMP/bare-outside" "$ws/nomanifest"
+ln -s "$TMP/does-not-exist-anywhere" "$ws/dangling"
+cat > "$ws/mp-nomanifest.json" <<'EOF'
+{"plugins":[{"name":"sneaky","description":"ten chars ok","source":"./nomanifest"}]}
+EOF
+cat > "$ws/mp-missing.json" <<'EOF'
+{"plugins":[{"name":"typo","description":"ten chars ok","source":"./does-not-exist"}]}
+EOF
+cat > "$ws/mp-dangling.json" <<'EOF'
+{"plugins":[{"name":"dangly","description":"ten chars ok","source":"./dangling"}]}
+EOF
+total=$((total+1))
+if run_in_workspace "$ws" "$ws/mp-nomanifest.json" | grep -q "invariant I9:"; then
+  echo "  PASS I9 escaped vendored source with no manifest — I9 fires"
+else echo "  FAIL I9 escaped vendored source with no manifest — expected I9 to fire"; failures=$((failures+1)); fi
+
+# Severity guards for the existence condition on that check. A source that is
+# simply absent, or a dangling symlink, is the genuine I8 case and must stay in
+# the warn tier under the shipped default; promoting it would break the
+# WARN_INVARIANTS contract downstream repos rely on.
+for case_name in missing dangling; do
+  total=$((total+1))
+  out="$(run_in_workspace "$ws" "$ws/mp-$case_name.json" "I1 I3 I5 I8")"
+  if grep -q "invariant I8:" <<<"$out" && ! grep -q '::error' <<<"$out"; then
+    echo "  PASS I8 $case_name vendored source stays a warning"
+  else
+    echo "  FAIL I8 $case_name vendored source — expected a warning-only I8"
+    failures=$((failures+1))
+  fi
+done
+
+# Annotation injection: a newline inside a source field must fire I9 AND must
+# not be able to start a forged ::error line of its own.
+f=$(mk i9_newline <<'EOF'
+{"plugins":[{"name":"abc","description":"ten chars ok","source":{"source":"git-subdir","url":"https://github.com/x/y","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path":"a\n::error::forged"}}]}
+EOF
+); assert_fires "I9 newline in path" I9 "$f"
+total=$((total+1))
+if run_invariants "$f" | grep -q '^::error::forged'; then
+  echo "  FAIL I9 newline in path — forged annotation line reached output"
+  failures=$((failures+1))
+else
+  echo "  PASS I9 newline in path — no forged annotation line"
+fi
 
 # Warning mode: when a code is in WARN_INVARIANTS, the script emits a warning
 # (not an error) and exits 0. Validate I1 demoted to warning does NOT fail.

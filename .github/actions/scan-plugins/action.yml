@@ -3,9 +3,9 @@ description: >
   Claude-based policy/safety scan of changed external marketplace entries.
   Clones each changed entry at its pinned SHA, runs Claude headless against
   policy/prompt.md, and reports verdicts as inline annotations and a step
-  summary. Non-blocking by default (warnings); set fail-on-findings to make
-  policy violations fail the job. Bot-free: needs only an ANTHROPIC_API_KEY
-  secret.
+  summary. Non-blocking by default (warnings); set fail-on-findings to make a
+  scan that did not come back clean fail the job. Bot-free: needs only an
+  ANTHROPIC_API_KEY secret.
 
 inputs:
   anthropic-api-key:
@@ -18,7 +18,10 @@ inputs:
     description: Git ref to diff against for change detection
     default: ${{ github.event.pull_request.base.sha || github.event.before || 'origin/main' }}
   fail-on-findings:
-    description: If true, a `passes:false` verdict fails the job. Default false (annotate-only).
+    description: >
+      If true, the job fails unless the scan came back clean: any `passes:false`
+      verdict OR any target that could not be scanned. Default false
+      (annotate-only).
     default: "false"
   scan-all-external:
     description: Scan EVERY external entry, not just changed ones. For nightly full sweeps.
@@ -30,8 +33,11 @@ inputs:
     description: Space-separated allowlist of git hosts to clone from (SSRF guard).
     default: "github.com gitlab.com bitbucket.org"
   claude-cli-version:
-    description: Version of @anthropic-ai/claude-code to install
-    default: latest
+    description: >
+      Version of @anthropic-ai/claude-code to install. Pinned (not "latest")
+      because scan.sh relies on the --restricted and --strict-mcp-config
+      isolation flags, which exist from this version on.
+    default: "2.1.278"
   npm-registry:
     description: Optional npm registry URL for tooling installs
     default: ""
@@ -42,13 +48,19 @@ inputs:
 outputs:
   scanned:
     description: JSON array of {name, passes, summary, violations, may_make_external_network_calls, may_download_additional_software}
-    value: ${{ steps.scan.outputs.scanned }}
+    value: ${{ steps.scan.outputs.scanned || steps.skip.outputs.scanned }}
   failed:
     description: JSON array of plugin names that failed policy
-    value: ${{ steps.scan.outputs.failed }}
+    value: ${{ steps.scan.outputs.failed || steps.skip.outputs.failed }}
+  skipped:
+    description: JSON array of {name, reason} for targets that could not be scanned
+    value: ${{ steps.scan.outputs.skipped || steps.skip.outputs.skipped }}
   result:
-    description: pass | fail | skipped
-    value: ${{ steps.scan.outputs.result }}
+    description: >
+      pass | fail | skipped. `pass` means every target was scanned and passed;
+      a policy failure or an unscanned target reports `fail` even when the job
+      itself is non-blocking, so gating on `result == 'pass'` fails closed.
+    value: ${{ steps.scan.outputs.result || steps.skip.outputs.result }}
 
 runs:
   using: composite
@@ -62,10 +74,16 @@ runs:
         chmod +x "${{ github.action_path }}/scripts/"*.sh
 
     - name: Skip if no API key
+      id: skip
       if: inputs.anthropic-api-key == ''
       shell: bash
       run: |
         echo "::notice::scan-plugins: ANTHROPIC_API_KEY not set; skipping policy scan."
+        # The array outputs keep their documented JSON shape so a consumer that
+        # always parses them with fromJSON does not break on the no-key path.
+        echo "scanned=[]" >> "$GITHUB_OUTPUT"
+        echo "failed=[]" >> "$GITHUB_OUTPUT"
+        echo "skipped=[]" >> "$GITHUB_OUTPUT"
         echo "result=skipped" >> "$GITHUB_OUTPUT"
 
     - name: Install jq
@@ -75,7 +93,7 @@ runs:
 
     - name: Install Node
       if: inputs.anthropic-api-key != ''
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
       with:
         node-version: "20"
 

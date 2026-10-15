@@ -44,7 +44,7 @@ jobs:
   bump:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: anthropics/claude-plugins-community/.github/actions/bump-plugin-shas@<PINNED-SHA>
         with:
           marketplace-path: .claude-plugin/marketplace.json
@@ -71,6 +71,28 @@ jobs:
 | `bumped` | JSON array of `{name, old_sha, new_sha}` |
 | `skipped` | JSON array of `{name, reason}` |
 | `pr-url` | URL of the bump PR (empty if nothing to bump) |
+
+## Not compatible with per-file (`entries-dir`) repos
+
+This action reads, rewrites and commits `marketplace-path` itself. It has no
+`entries-dir` input and no notion of per-file entries, so on a repo that keeps
+one JSON file per plugin and assembles the marketplace at validation time it is
+wrong twice over:
+
+- `validate-plugins` invariant I7 fails a diff that touches the assembled
+  `marketplace.json` ("per-file repos must edit `$ENTRIES_DIR/*.json` only").
+  I7 is not in the `WARN_INVARIANTS` default, so it blocks. The bump commit is
+  exactly the edit that invariant forbids.
+- Even if it passed, the new SHAs would land in the derived file and be
+  discarded the next time the marketplace is assembled from `entries-dir`.
+
+The failure is easy to miss because a PR opened with `GITHUB_TOKEN` does not
+trigger `on: pull_request` (see the note in `action.yml`), so the bump PR runs
+no check and the breakage only surfaces on the post-merge `push` run — turning
+the default branch red.
+
+Do not wire this action into a per-file repo. Bumping pinned SHAs there means
+rewriting the individual `entries-dir/*.json` files instead.
 
 ## Security
 

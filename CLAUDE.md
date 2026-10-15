@@ -67,16 +67,32 @@ README.md
 ```
 
 The three actions are designed as a system (gate → policy → maintenance)
-and share `validate-plugins/lib/common.sh` for safety helpers
-(`has_unsafe_chars`, `assert_safe_string`, `assert_safe_url`,
-`assert_safe_sha`, `assert_safe_path`, `cli_validate`).
-`assert_safe_string` is the shared predicate that `assert_safe_url` and
-`assert_safe_path` delegate to; `has_unsafe_chars` is its underlying
-character check (rejects shell metacharacters plus whitespace, including
-newline and carriage return). `scan-plugins` and
-`bump-plugin-shas` source it via `$VALIDATE_LIB` (a relative path set
-in their action.yml setup steps). When touching one action, check
-whether the same change is needed in the others.
+and share `validate-plugins/lib/common.sh` for safety helpers.
+`scan-plugins` and `bump-plugin-shas` source it via `$VALIDATE_LIB` (a
+relative path set in their action.yml setup steps). When touching one
+action, check whether the same change is needed in the others — every
+duplicated predicate in this codebase has eventually drifted.
+
+| Helper | Shape | What it is for |
+|---|---|---|
+| `has_unsafe_chars` | 0 = unsafe | Character check: shell metacharacters plus whitespace, including newline and CR. The base of the other string predicates. |
+| `assert_safe_string` | dies | Wraps `has_unsafe_chars`. `assert_safe_path` delegates to it. |
+| `url_safe_or_reason` | **0 = safe**, reason on stdout | The one URL implementation: https only, safe charset, bare IP or port rejected regardless of `ALLOWED_HOSTS`, then the allowlist. Empty `ALLOWED_HOSTS` fails closed. |
+| `assert_safe_url` | dies | Asserting wrapper around `url_safe_or_reason`. |
+| `assert_safe_sha` / `assert_safe_path` / `assert_safe_ref` | die | 40-hex sha; relative path with no `..`; a git ref that cannot parse as an option. |
+| `annot_text` | echoes | Flattens CR/LF and caps length for text interpolated **into** a `::workflow-command` line. |
+| `log_untrusted` | prints | For plugin/model/CLI text printed **as** whole lines: indents every line so none can begin with `::`. |
+| `assert_helpers_defined` | exits 1 | Checks `REQUIRED_HELPERS`, every helper a security gate depends on. Both standalone actions call it after sourcing. |
+| `path_contained_or_reason` | **0 = contained**, reason on stdout | The one physical-containment implementation: resolves both paths and requires the target to be the root or below it. Every lexical path check is followed by something that resolves symlinks, so anything deciding *what gets read* must call this — on the plugin root as well as the manifest, since a root symlinked out whose manifest symlinks back in passes a manifest-only test. |
+| `step_begin` / `step_done` / `incomplete_steps` | mark / mark / echo | Step-completion tracking for `90-report.sh`. Each step marks itself begun on entry and done only on a zero exit (via an `EXIT` trap), so a step killed part-way is visible. Without it a step that aborts before recording anything leaves a results file full of passes and the report announces PASS. |
+| `cli_validate` | 0/1 | Runs `claude plugin validate`, classifies pass/warn/fail, honours `FAIL_ON_WARNINGS`. |
+
+Note the polarity split. `has_unsafe_chars` returns 0 for *unsafe*, but
+`url_safe_or_reason` returns 0 for *safe*, deliberately: its callers gate on
+success, so a failure of the function itself (an older `common.sh` where it is
+undefined) must land on the reject side rather than being waved through. Add
+new URL rules to `url_safe_or_reason`, not to `assert_safe_url`, and add any
+new gate dependency to `REQUIRED_HELPERS`.
 
 | Action | Role | Permissions | Secret |
 |---|---|---|---|
@@ -134,6 +150,17 @@ in lockstep if policy changes.
 - Emit GitHub annotations with `::notice::`, `::warning file=...,line=...::`,
   `::error file=...,line=...::` rather than plain `echo` for things a
   reviewer should see.
+- **Character-level tests on plugin text belong in `jq`, not in bash or
+  `sed`.** Bash glob bracket expressions and `${#s}` are character-aware only
+  in a multibyte locale and fall back to bytes under `LC_ALL=C`, which is what
+  a `container:` job or a self-hosted runner with no locale set gets; `sed`
+  anchors `^`/`$` per line, not per string. Both produced silent false
+  positives here, one of them on a blocking invariant. `jq` decodes JSON to
+  codepoints, so it behaves identically on every runner. Anchor any regex you
+  write there with Oniguruma escapes (`\x{a0}`), not `\uXXXX` — jq resolves
+  `\uXXXX` in a string literal, but a string that *is* a regex needs an escape
+  the regex engine understands, and `\u` silently degrades into a character
+  range spanning most of ASCII.
 
 ### Validation pipeline (step-by-step)
 
@@ -171,8 +198,8 @@ must stay green.
 
 | Script | Covers | Run when you touch |
 |---|---|---|
-| `test-invariants.sh` | I1–I11 against synthetic `marketplace.json` fixtures; plus a real-git fixture for I7 (per-file mode, `BASE_REF=HEAD~1`); plus boundary/false-positive guards and `WARN_INVARIANTS` demotion behaviour | `scripts/11-validate-invariants.sh` |
-| `test-common.sh` | The `lib/common.sh` security predicates directly: `has_unsafe_chars`, `assert_safe_sha`, `assert_safe_path`, `assert_safe_url` (allowlist match, lookalike-host rejection, SSRF guards) | `lib/common.sh` |
+| `test-invariants.sh` | I1–I11 against synthetic `marketplace.json` fixtures; plus a real-git fixture for I7 (per-file mode, `BASE_REF=HEAD~1`); plus boundary/false-positive guards and `WARN_INVARIANTS` demotion behaviour; plus locale guards for I3/I10 (each asserted under both `LC_ALL=C` and `LC_ALL=C.utf8`) and whole-string-vs-per-line anchor guards for I3's whitespace rule | `scripts/11-validate-invariants.sh` |
+| `test-common.sh` | The `lib/common.sh` security predicates directly: `has_unsafe_chars`, `annot_text`, the `warn`/`error`/`log_untrusted` sinks, `assert_safe_sha`, `assert_safe_path`, `assert_safe_ref`, `assert_safe_url` and `url_safe_or_reason` (allowlist match, lookalike-host rejection, SSRF guards, bare IP rejected even when allowlisted, missing helper rejects), `assert_helpers_defined`, `path_contained_or_reason`, and the step-completion helpers including the `EXIT`-trap shape each step installs | `lib/common.sh` |
 
 Adding a new invariant means adding at least one fixture that exercises
 it (a positive case) plus a false-positive guard for any boundary it
