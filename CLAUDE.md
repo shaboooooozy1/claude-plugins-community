@@ -31,6 +31,9 @@ or invariant changes, work under `.github/actions/`.
 ```
 .claude-plugin/
   marketplace.json            # ~1700+ entries, alpha-sorted by name. Do not hand-edit.
+.cursor/
+  environment.json            # Cloud Agent env: runs install.sh
+  install.sh                  # idempotent: jq + the pinned claude CLI, chmod the scripts
 .github/
   workflows/
     validate-plugins.yml      # dogfoods the local validate-plugins action on every PR
@@ -62,6 +65,7 @@ or invariant changes, work under `.github/actions/`.
       policy/prompt.md        # default review prompt (overridable)
       policy/schema.json      # JSON Schema for Claude's structured output
       README.md
+.gitignore                    # validate scratch dir, *.json.tmp, env files, key material
 LICENSE
 README.md
 ```
@@ -131,16 +135,42 @@ in lockstep if policy changes.
 ### Conventions baked into the bash
 
 - `set -euo pipefail` at the top of every script, plus
-  `source "$ACTION_PATH/lib/common.sh"`.
+  `source "$ACTION_PATH/lib/common.sh"`. `scan.sh` and `bump.sh` source
+  `$VALIDATE_LIB` instead, then call `assert_helpers_defined` before
+  anything else so a stale library cannot silently drop a gate.
+- Every step marks itself with `step_begin` on entry and `step_done` from
+  an `EXIT` trap that fires only on a zero exit. A step that already owns
+  a trap (step 30 cleans up its clone workroot) **re-arms** it rather than
+  replacing it; a bare `trap ... EXIT` there would drop the completion
+  handler and the step would never read as finished.
 - Every contributor-controlled string (`url`, `sha`, `path`, names from
-  `marketplace.json`) is re-validated with `assert_safe_*` immediately
-  before any shell use, even if a schema or invariant already ran.
+  `marketplace.json`, `BASE_REF`) is re-validated immediately before any
+  shell use, even if a schema or invariant already ran. Two forms, by
+  context: top-level code uses the asserting `assert_safe_*` helpers and
+  dies; a per-entry loop (step 30, `scan.sh`, `bump.sh`) uses the
+  non-fatal `*_or_reason` helpers, records the rejection with
+  `record_result` or `skipped`, and `continue`s. One off-allowlist entry
+  must not end a sweep over the other 1700.
 - Every git invocation uses `--` end-of-options markers and quoted
-  arguments: `git clone --quiet --depth 1 -- "$url" "$dest"`. Don't
+  arguments: `git clone --quiet --depth 1 -- "$url" "$dest"`. `BASE_REF`
+  goes through `assert_safe_ref` before `fetch`/`diff`/`show`. Don't
   remove these; they are SSRF/argument-injection defense.
 - Clone targets are **index-derived** (`ext-$idx`), never name-derived.
   Don't change this without reading the security model in
   `validate-plugins/README.md`.
+- Anything that decides **what gets read** goes through
+  `path_contained_or_reason`, but the scope differs by step and you must
+  not assume more than each one does. Steps 30 and 40 and `bump.sh` test
+  the manifest with `-L` and then check both the plugin root and the
+  manifest. Step 11 checks the vendored root and manifest for
+  containment but has no `-L` test, so a manifest symlink that resolves
+  *inside* the workspace passes. Step 41 checks the changed folder and
+  each aux file (`-L` plus containment), not the manifest. `scan.sh`
+  resolves only its `cd` target against the clone, with an inline
+  `realpath` comparison rather than the shared helper, and has no
+  manifest guard. Lexical checks (`-f`, `..`, leading `/`) are never
+  enough on their own because every one of them is followed by something
+  that resolves symlinks.
 - Hosts that external sources may point to come from `ALLOWED_HOSTS`
   (default `github.com gitlab.com bitbucket.org`). Bare IPs are always
   rejected. Subdomains of allowed hosts are accepted.
@@ -149,7 +179,16 @@ in lockstep if policy changes.
   about. Don't print findings only to stdout.
 - Emit GitHub annotations with `::notice::`, `::warning file=...,line=...::`,
   `::error file=...,line=...::` rather than plain `echo` for things a
-  reviewer should see.
+  reviewer should see. Untrusted text has two sinks and you must pick
+  the right one: interpolated **into** a command line it goes through
+  `annot_text` (automatic inside `warn`/`error`; call it yourself for a
+  bare `printf '::warning ...'`); printed **as** whole lines (validator
+  output, a model's raw verdict, a changed-file list) it goes through
+  `log_untrusted`, because a line that merely *begins* with `::` is a
+  command even after newlines are flattened. Markdown report cells go
+  through one jq `cell` filter that strips CR, LF and `|`; it is copied
+  verbatim in `90-report.sh`, `scan.sh` and `bump.sh` and must stay
+  identical.
 - **Character-level tests on plugin text belong in `jq`, not in bash or
   `sed`.** Bash glob bracket expressions and `${#s}` are character-aware only
   in a multibyte locale and fall back to bytes under `LC_ALL=C`, which is what
@@ -168,13 +207,13 @@ The `validate-plugins` action runs these scripts in order:
 
 | Step | Script | What it does |
 |---|---|---|
-| 00 | `00-detect-changes.sh` | Diff vs `BASE_REF`, output `changes.json` with changed entries, external sources, and in-repo folders. Assembles marketplace from per-file entries if `ENTRIES_DIR` is set. |
-| 11 | `11-validate-invariants.sh` | I1–I11 policy invariants on the full marketplace. |
+| 00 | `00-detect-changes.sh` | `assert_safe_ref` on `BASE_REF`, then diff against it and output `changes.json` with changed entries, external sources, and in-repo folders. If the diff itself fails, per-file entries fall back to *every* entry, but single-file entries are still computed by comparing the base marketplace to the head, so when the base is readable unchanged external entries stay out of the sweep. Assembles marketplace from per-file entries if `ENTRIES_DIR` is set. |
+| 11 | `11-validate-invariants.sh` | I1–I11 policy invariants on the full marketplace. I3/I10 are computed in `jq` (see conventions). I7 fails closed when `git diff` against `BASE_REF` errors. I9 also covers vendored-source containment (see severity contract). |
 | 20 | `20-validate-cli-marketplace.sh` | `claude plugin validate` on the assembled marketplace.json (canonical schema check). |
-| 30 | `30-validate-cli-external.sh` | Clone each changed external entry at its pinned SHA, run `claude plugin validate`. Skippable via `skip-external`. |
-| 40 | `40-validate-cli-local.sh` | `claude plugin validate` on each changed in-repo plugin folder. Skippable via `skip-local-folders`. |
-| 41 | `41-validate-aux-files.sh` | JSON-parse auxiliary files (`.mcp.json`, `.lsp.json`, `hooks/hooks.json`) in changed folders — catches malformed JSON that `claude plugin validate` may not surface. |
-| 90 | `90-report.sh` | Aggregate `results.jsonl` into a markdown step summary; set the `result` output. |
+| 30 | `30-validate-cli-external.sh` | For each changed external entry: reject-and-continue on a bad URL, sha or path; clone at the pinned SHA; reject a symlinked manifest or a root/manifest that resolves outside the clone; run `claude plugin validate`. Skippable via `skip-external`. |
+| 40 | `40-validate-cli-local.sh` | For each changed in-repo plugin folder: the same symlink and containment guard against the workspace root (this runs **before** 41 and step 00 selects folders with `-f`, which follows symlinks), then `claude plugin validate`. Skippable via `skip-local-folders`. |
+| 41 | `41-validate-aux-files.sh` | JSON-parse auxiliary files (`.mcp.json`, `.lsp.json`, `hooks/hooks.json`) in changed folders — catches malformed JSON that `claude plugin validate` may not surface. Containment is physical, so an ancestor symlink (`hooks/ -> /etc`) is caught, not just a leaf `-L`. |
+| 90 | `90-report.sh` | Aggregate `results.jsonl` into a markdown step summary; set the `result` output. Runs `if: always()` and fails the run on a missing, empty or unparseable results file **and** on any step that began but did not finish. |
 
 ### Schema strategy: do not vendor
 
@@ -224,13 +263,25 @@ WARN_INVARIANTS="I1 I3 I5 I8"
 i.e. sort-order, description length/whitespace, missing SHA, and
 missing vendored-plugin manifest are **non-blocking by default**. The
 hard-blocking invariants are I2 (dup names), I4 (non-https URLs), I6/I7
-(per-file mode integrity), I9 (shell metacharacters), I10 (hidden
-Unicode), I11 (name regex). Consumers can override `WARN_INVARIANTS`
-(empty string = everything blocks) or set `FAIL_ON_WARNINGS=true` to
-turn the warning tier into hard failures. Keep this contract stable —
-downstream `*-plugins` repos rely on it. If you tighten a default, ship
-it as a separately-pinned SHA so consumers can roll forward
-deliberately.
+(per-file mode integrity; I7 also fails when it *cannot* diff against
+`BASE_REF`, rather than passing), I9, I10 (hidden Unicode), I11 (name
+regex).
+
+I9 is wider than its one-line name. It blocks on: shell metacharacters,
+including newline and CR, in **any** string field under `.source`; a
+`source.path` that is absolute or contains `..`; an absolute vendored
+source; and a vendored source root or its manifest that **resolves**
+outside the workspace. That last case is deliberately I9 rather than I8:
+a path escape has to block, and I8 is warn-by-default. The containment
+check is guarded on the path existing, so a plain typo in a vendored
+path (or a dangling symlink) still lands on warn-tier I8 and the
+severity contract holds.
+
+Consumers can override `WARN_INVARIANTS` (empty string = everything
+blocks) or set `FAIL_ON_WARNINGS=true` to turn the warning tier into
+hard failures. Keep this contract stable — downstream `*-plugins` repos
+rely on it. If you tighten a default, ship it as a separately-pinned SHA
+so consumers can roll forward deliberately.
 
 ### bump-plugin-shas: server-side signing via GraphQL
 
@@ -246,6 +297,33 @@ The PR branch is force-reset to `BASE_BRANCH` HEAD on each run (one
 fresh commit replaces a stale unmerged bump). `expectedHeadOid` provides
 CAS semantics so concurrent pushes fail loudly.
 
+It has no `entries-dir` input and rewrites the assembled
+`marketplace.json`, which is exactly what I7 blocks in a per-file repo.
+Do not wire it into one; its README says why.
+
+### scan-plugins: contract and isolation
+
+`scan.sh` runs `claude -p` against each changed external entry with
+`--bare --restricted --strict-mcp-config` and stdin from `/dev/null`, so
+the clone's `.claude/settings*.json`, hooks, `CLAUDE.md` and `.mcp.json`
+are review *material* rather than configuration, and the file tools are
+confined to the clone. The scan `cd`s into the resolved target, not the
+lexical `source.path`; note that this is an inline `realpath` comparison
+against the clone rather than `path_contained_or_reason`, and nothing
+checks the manifest. `claude-cli-version` is pinned in its `action.yml`
+(not `latest`) because those flags are version-dependent.
+
+Because it runs standalone and never sees step 11, it re-checks each
+entry name's type and the I11 regex itself. The outputs are always JSON
+arrays, `[]` on the no-API-key path: `scanned`, `failed`, and `skipped`
+(`{name, reason}` for every target it could not reach — invalid name,
+missing sha, blocked host, clone failure, unparseable verdict). `result`
+is `pass`, `fail` or `skipped` and reports the true scan outcome: a
+policy failure **or** an unscanned target is `fail` even when the job is
+non-blocking, so gating on `result == 'pass'` fails closed.
+`FAIL_ON_FINDINGS=true` then means "fail the job unless the scan came
+back clean", on either count.
+
 ### Releasing changes to the actions
 
 Consumers of these actions pin by full commit SHA, never by branch or
@@ -257,7 +335,9 @@ tag. See `validate-plugins/RELEASING.md`. When you ship a change:
 3. Bump pinned SHAs in any consuming repo with separate PRs.
 
 Never recommend `@main` or `@v1` in any `uses:` example you write —
-that's a supply-chain footgun for the consumers.
+that's a supply-chain footgun for the consumers. The same rule applies
+inside this repo: every `uses:` in `.github/` is pinned to a commit SHA
+with the tag in a trailing comment.
 
 ## Development workflow
 
@@ -282,7 +362,9 @@ that's a supply-chain footgun for the consumers.
 The workflow triggers on PRs and pushes to `main` that touch
 `.claude-plugin/**` or `.github/actions/**`. It runs the static test
 suites first, then dogfoods the local validate-plugins action (with
-`skip-local-folders: "true"` since this repo has no vendored plugins).
+`skip-local-folders: "true"` since this repo has no vendored plugins,
+and an explicit `claude-cli-version` — the action's own default is
+`latest`, so this repo pins it in the workflow instead).
 
 There is no test runner, linter, or formatter beyond bash scripts and
 `jq`. Don't introduce one without a clear need; the simplicity is part
@@ -298,6 +380,11 @@ bash .github/actions/validate-plugins/test-common.sh
 Both run offline (no network, no API key, no `claude` CLI needed). They
 create temporary directories, exercise the logic via synthetic fixtures,
 and clean up. Exit code 0 = pass.
+
+To run the full pipeline (steps 20–41 need the `claude` CLI),
+`bash .cursor/install.sh` installs `jq` and the same pinned CLI version
+the workflow uses, and chmods the scripts so they run without the
+composite-action wrapper.
 
 ### GitHub interactions
 
@@ -332,20 +419,45 @@ not ask first.
 ## Security model (quick reference)
 
 The codebase defends against contributor-controlled strings escaping
-into shell evaluation or git argument injection:
+into shell evaluation, git argument injection, GitHub workflow commands,
+or reads outside the checkout — and against a gate that silently
+degrades into a pass:
 
 1. **Input validation** — `assert_safe_url`, `assert_safe_sha`,
-   `assert_safe_path` are called immediately before any shell use of
-   contributor data, even when schema/invariant checks already ran
-   (defense-in-depth).
+   `assert_safe_path`, `assert_safe_ref` immediately before any shell
+   use of contributor data, even when schema/invariant checks already
+   ran (defense-in-depth). Per-entry loops use the non-fatal
+   `url_safe_or_reason` / `path_contained_or_reason` forms and skip the
+   entry instead of aborting the sweep.
 2. **Host allowlist** — `ALLOWED_HOSTS` (default: `github.com`,
-   `gitlab.com`, `bitbucket.org`). Bare IPs always rejected. Subdomains
-   accepted.
+   `gitlab.com`, `bitbucket.org`). Bare IPs and ports are rejected
+   *before* and independently of the allowlist, so an operator cannot
+   open a metadata endpoint by listing it. Empty allowlist fails closed.
+   Subdomains accepted.
 3. **Index-derived paths** — clone targets use `ext-$idx`, never
    user/plugin names. Prevents path injection.
 4. **`--` discipline** — every `git` invocation uses end-of-options
    markers and double-quoted arguments.
-5. **No execution of cloned content** — `claude plugin validate` is a
-   static check. Nothing from cloned repos is sourced/executed.
-6. **GraphQL commit creation** — `bump-plugin-shas` creates commits
+5. **Physical containment** — `path_contained_or_reason` wherever a
+   path decides what gets read, with per-step scope: root and manifest
+   in steps 11/30/40 and `bump.sh`; folder and aux files in step 41; the
+   `cd` target only in `scan.sh` (an inline `realpath` check, no
+   manifest guard). Steps 30/40 and `bump.sh` also reject a symlinked
+   manifest outright; step 11 does not.
+6. **No forged workflow commands** — `annot_text` at the `warn`/`error`
+   sink, `log_untrusted` for whole-line output, and one escaped-cell
+   filter for every markdown report. A plugin name, ref, or model
+   verdict cannot start a `::error::` line or forge a `Result: PASS`.
+7. **No execution of cloned content** — `claude plugin validate` is a
+   static check. `scan.sh` isolates `claude -p` with `--bare --restricted
+   --strict-mcp-config` so the clone's settings, hooks and MCP config are
+   never loaded. Nothing from cloned repos is sourced/executed.
+8. **Fail closed** — `assert_helpers_defined` after sourcing; I7 fails
+   when it cannot diff; `90-report.sh` fails on a missing/empty results
+   file or an unfinished step; `scan.sh` reports `result=fail` for any
+   target it could not scan.
+9. **GraphQL commit creation** — `bump-plugin-shas` creates commits
    server-side; no signing key on the runner, nothing to leak.
+10. **Pinned supply chain** — every `uses:` in `.github/` is pinned to
+    a commit SHA; `scan-plugins` pins `claude-cli-version` by default;
+    this repo's workflow pins it for `validate-plugins` too.
