@@ -158,11 +158,18 @@ in lockstep if policy changes.
 - Clone targets are **index-derived** (`ext-$idx`), never name-derived.
   Don't change this without reading the security model in
   `validate-plugins/README.md`.
-- Anything that decides **what gets read** — a plugin root, a manifest,
-  an aux file, the `cd` target for a scan — goes through
-  `path_contained_or_reason` on both the root and the manifest, after a
-  `-L` test on the manifest itself. Lexical checks (`-f`, `..`, leading
-  `/`) are not enough because every one of them is followed by something
+- Anything that decides **what gets read** goes through
+  `path_contained_or_reason`, but the scope differs by step and you must
+  not assume more than each one does. Steps 30 and 40 and `bump.sh` test
+  the manifest with `-L` and then check both the plugin root and the
+  manifest. Step 11 checks the vendored root and manifest for
+  containment but has no `-L` test, so a manifest symlink that resolves
+  *inside* the workspace passes. Step 41 checks the changed folder and
+  each aux file (`-L` plus containment), not the manifest. `scan.sh`
+  resolves only its `cd` target against the clone, with an inline
+  `realpath` comparison rather than the shared helper, and has no
+  manifest guard. Lexical checks (`-f`, `..`, leading `/`) are never
+  enough on their own because every one of them is followed by something
   that resolves symlinks.
 - Hosts that external sources may point to come from `ALLOWED_HOSTS`
   (default `github.com gitlab.com bitbucket.org`). Bare IPs are always
@@ -200,7 +207,7 @@ The `validate-plugins` action runs these scripts in order:
 
 | Step | Script | What it does |
 |---|---|---|
-| 00 | `00-detect-changes.sh` | `assert_safe_ref` on `BASE_REF`, then diff against it and output `changes.json` with changed entries, external sources, and in-repo folders. If the diff itself fails, everything is treated as changed. Assembles marketplace from per-file entries if `ENTRIES_DIR` is set. |
+| 00 | `00-detect-changes.sh` | `assert_safe_ref` on `BASE_REF`, then diff against it and output `changes.json` with changed entries, external sources, and in-repo folders. If the diff itself fails, per-file entries fall back to *every* entry, but single-file entries are still computed by comparing the base marketplace to the head, so when the base is readable unchanged external entries stay out of the sweep. Assembles marketplace from per-file entries if `ENTRIES_DIR` is set. |
 | 11 | `11-validate-invariants.sh` | I1–I11 policy invariants on the full marketplace. I3/I10 are computed in `jq` (see conventions). I7 fails closed when `git diff` against `BASE_REF` errors. I9 also covers vendored-source containment (see severity contract). |
 | 20 | `20-validate-cli-marketplace.sh` | `claude plugin validate` on the assembled marketplace.json (canonical schema check). |
 | 30 | `30-validate-cli-external.sh` | For each changed external entry: reject-and-continue on a bad URL, sha or path; clone at the pinned SHA; reject a symlinked manifest or a root/manifest that resolves outside the clone; run `claude plugin validate`. Skippable via `skip-external`. |
@@ -300,10 +307,11 @@ Do not wire it into one; its README says why.
 `--bare --restricted --strict-mcp-config` and stdin from `/dev/null`, so
 the clone's `.claude/settings*.json`, hooks, `CLAUDE.md` and `.mcp.json`
 are review *material* rather than configuration, and the file tools are
-confined to the clone. The scan `cd`s into the resolved,
-containment-checked target, not the lexical `source.path`. `claude-cli-version` is
-pinned in its `action.yml` (not `latest`) because those flags are
-version-dependent.
+confined to the clone. The scan `cd`s into the resolved target, not the
+lexical `source.path`; note that this is an inline `realpath` comparison
+against the clone rather than `path_contained_or_reason`, and nothing
+checks the manifest. `claude-cli-version` is pinned in its `action.yml`
+(not `latest`) because those flags are version-dependent.
 
 Because it runs standalone and never sees step 11, it re-checks each
 entry name's type and the I11 regex itself. The outputs are always JSON
@@ -430,10 +438,12 @@ degrades into a pass:
    user/plugin names. Prevents path injection.
 4. **`--` discipline** — every `git` invocation uses end-of-options
    markers and double-quoted arguments.
-5. **Physical containment** — `path_contained_or_reason` on the plugin
-   root *and* the manifest wherever a path decides what gets read
-   (steps 11/30/40/41, `scan.sh`, `bump.sh`). Symlinked manifests and
-   aux files are rejected outright.
+5. **Physical containment** — `path_contained_or_reason` wherever a
+   path decides what gets read, with per-step scope: root and manifest
+   in steps 11/30/40 and `bump.sh`; folder and aux files in step 41; the
+   `cd` target only in `scan.sh` (an inline `realpath` check, no
+   manifest guard). Steps 30/40 and `bump.sh` also reject a symlinked
+   manifest outright; step 11 does not.
 6. **No forged workflow commands** — `annot_text` at the `warn`/`error`
    sink, `log_untrusted` for whole-line output, and one escaped-cell
    filter for every markdown report. A plugin name, ref, or model
